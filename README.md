@@ -1,24 +1,24 @@
 # GPU Affordability
 DENG Module Group Project
 
-GPU prices are rising rapidly and few consumers know how long they should wait to buy their preferred hardware. This is only made worse by the release of new LLM Models and news of large companies.
-
-The prognosis made in this project aims for small businesses and individuals to see through the hype and see if their intended GPU's can be bought at reasonable prices, or if waiting is the better option.
-
-For this purpose thie project creates a daily-refreshed table ranking GPU's on the category *buy now* vs. *wait*.
+GPU prices are rising rapidly, leaving many consumers uncertain about when to buy their preferred hardware. This issue is compounded by constant news coverage and frequent releases of new Large Language Models (LLMs).
 
 
+## Use Case
+
+This project provides a forecast to help small businesses and individuals look past the hype. It helps determine whether an intended GPU can be purchased at a reasonable price now, or if waiting is the better option.
+
+To achieve this, the project maintains a daily-updated table ranking GPUs into two categories: **Buy Now** vs. **Wait**.
 
 
-## Data 
+## Data
 
-A collection of hardware deals beginning last year.
+- **Historical Hardware Deals:** A dataset tracking hardware deals since last year.
+  - **Source:** [HardwareDealsCo/gpu-deals](https://github.com/HardwareDealsCo/gpu-deals)
+  - **Details:** The source scrapes deal data from the website HardwareDeals.co, which compiles hardware listings from eBay.
 
-Source: https://github.com/HardwareDealsCo/gpu-deals
-
-The source scraped the data from the website HardwareDeals co, which features hardware components from eBay.
-
-As an additional source data from major AI companies and the release dates of their models shall be gathered manually, or scraped if plausible, to enhance model performance.
+- **AI Release Milestones:** An additional dataset collecting major AI model releases and company announcements.
+  - **Details:** Gathered manually (or via scraping where feasible) to enhance the model's forecasting performance.
 
 
 ## Architecture
@@ -46,11 +46,50 @@ uv run {script}
 ```
 
 
-
 ### Initial Plan
-1. Create a first baseline model to check if categorization of models is plausible
-2. Build the LLM Release calendar
-3. SQL Storage (Schema)
-4. Build pipeline
-5. Docker setup
-6. Compare training model with a true prognosis model for the prices on the next day. Chose if categorization remains the limit with available data.
+
+#### W3 Pitch + Initial Project Setup
+- Data source
+
+#### W7 Midterm
+- Ingestion pipeline (4); 
+- local storage/schema (2); 
+- Docker/reproducible environment (3); 
+- ReadMe with instructions required for Peer Reproducibility
+- Proper Review
+- Oral Defence (Understand entire codebase and decisions. Both team members.)
+
+Silas:
+- Local Storage 
+- Docker environment
+
+Natalie:
+- Ingestion
+
+Shared:
+- Reproducibility
+- ReadMe
+
+
+#### W14
+- Terraform/cloud infrastructure (3); 
+- cloud ingestion (3); 
+- transformation and warehouse design (3); 
+- orchestration, reliability and data quality (2); 
+- documentation, security and reproducibility (2):
+- Peer Review
+- Oral Defence (Understand entire codebase and decisions. Both team members.)
+
+Silas:
+- transformation and warehouse design
+- cloud ingestion
+
+
+Natalie:
+- Terraform/cloud infrastructure
+- orchestration, reliability and data quality
+
+Shared:
+- documentation, security and reproducibility
+
+Optional: Compare classification with prognosis model with prediction for next day. 
