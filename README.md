@@ -61,7 +61,11 @@ uv run {script}
 
 Silas:
 - Local Storage 
+  - s3
 - Docker environment
+  - Python script app for ingestion
+  - s3 volume
+  - MLFlow
 
 Natalie:
 - Ingestion

@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:18.6-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./postgres_data:/var/lib/postgresql
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - development
+
+  objectstorage:
+    container_name: objectstorage
+    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z 
+    # See: https://jacar.es/en/fix-pull-access-denied-minio-docker/
+    command: server --address "0.0.0.0:9000" /data
+    hostname: objectstorage
+    expose:
+      - "9000"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ADMIN}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET}
+    volumes:
+      - ./s3_data:/data
+    networks:
+      - development
+
+  objectstorage-init:
+    build: ./containers/mlflow
+    image: gpu-mlflow:local
+    depends_on:
+      - objectstorage
+    environment:
+      - AWS_ACCESS_KEY_ID=${MINIO_ADMIN}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET}
+      - AWS_DEFAULT_REGION=us-east-1
+    entrypoint: ["python", "-c"]
+    command:
+      - |
+        import boto3, time
+        s3 = boto3.client("s3", endpoint_url="http://objectstorage:9000")
+        for _ in range(30):
+            try:
+                s3.create_bucket(Bucket="artifacts")
+                break
+            except s3.exceptions.BucketAlreadyOwnedByYou:
+                break
+            except Exception:
+                time.sleep(2)
+    networks:
+      - development
+
+  mlflow:
+    container_name: model-registry
+    build: ./containers/mlflow
+    image: gpu-mlflow:local
+    command: >
+      mlflow server --host 0.0.0.0 --port 5001
+      --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow
+      --artifacts-destination s3://artifacts
+    ports:
+      - 127.0.0.1:5001:5001 # 5000 (mlflow default port) is taken by airplay on macos
+    depends_on:
+      postgres:
+        condition: service_healthy
+      objectstorage-init:
+        condition: service_completed_successfully
+    environment:
+      - AWS_ACCESS_KEY_ID=${MINIO_ADMIN}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET}
+      - MLFLOW_S3_ENDPOINT_URL=http://objectstorage:9000
+    networks:
+      - development
+
+networks:
+  development:
+
+  # airflow image and dependencies
