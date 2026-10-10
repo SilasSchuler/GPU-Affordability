@@ -46,6 +46,36 @@ uv run {script}
 ```
 
 
+## Docker Containers
+
+Build docker containers
+```
+docker compose up -d
+
+# When finished
+docker compose down
+```
+
+#### Servers
+| Server | url |
+|---|---|
+| PostgresSQL | postgres:5432|
+| PGAdmin | localhost:8085 |
+| Minio Objectstore | localhost:9000 |
+| MLFlow | localhost:5001 |
+| development | VS Code, servers are accessible. With above links. |
+
+#### Login PGAdmin
+
+Server needs to be loaded manually, if interaction with PostgresSQL DB is required.
+
+| Connection | Address used |
+|---|---|
+| Your laptop's browser → pgAdmin | `http://localhost:8085` | 
+| pgAdmin container → PostgreSQL container | Host `postgres`, port `5432`, user `sharedUser`, pw `in .env` | 
+
+
+
 ### Initial Plan
 
 #### W3 Pitch + Initial Project Setup
