@@ -14,6 +14,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    ports:
+      - 127.0.0.1:5432:5432 # host access for `uv run` scripts / VS Code
     networks:
       - development
 
@@ -25,6 +27,8 @@ services:
     hostname: objectstorage
     expose:
       - "9000"
+    ports:
+      - 127.0.0.1:9000:9000 # host access for `uv run` scripts / VS Code
     environment:
       - MINIO_ROOT_USER=${MINIO_ADMIN}
       - MINIO_ROOT_PASSWORD=${MINIO_SECRET}
@@ -80,6 +84,31 @@ services:
     networks:
       - development
 
+
+  ingestion:
+    build:
+      context: .
+      dockerfile: containers/ingestion/dockerfile
+    image: gpu-ingestion:local
+    profiles: ["ingest"] # on-demand only: docker compose --profile ingest run --rm ingestion ...
+    depends_on:
+      postgres:
+        condition: service_healthy
+      objectstorage:
+        condition: service_started
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - MINIO_ENDPOINT=http://objectstorage:9000
+      - MINIO_ADMIN=${MINIO_ADMIN}
+      - MINIO_SECRET=${MINIO_SECRET}
+    volumes:
+      - ./data:/app/data:ro # seed mode reads the downloaded source files
+    networks:
+      - development
 
   pgadmin:
     image: dpage/pgadmin4:9.17

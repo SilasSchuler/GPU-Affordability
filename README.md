@@ -25,6 +25,44 @@ To achieve this, the project maintains a daily-updated table ranking GPUs into t
 
 ![Architecture v0.1](images/architecture_v0.1.png)
 
+## Ingestion Pipeline (W7)
+
+Scope: **extract both sources → land immutable raw copies in MinIO → load
+queryable JSONB rows in Postgres `raw` schema**. No cleaning, typing,
+deduplication or aggregation happens here — that is the W14 transformation
+phase. Every run is logged in `raw.ingestion_log` and is idempotent
+(re-running a snapshot replaces it, never duplicates).
+
+### Where the data lands
+
+| Layer | Location |
+|---|---|
+| Raw files | MinIO bucket `raw`: `gpu-deals/date=YYYY-MM-DD/GPU-YYYY-MM-DD.json`, `epoch-ai/load_date=YYYY-MM-DD/notable_models.csv` |
+| Raw tables | `raw.gpu_deals` (one JSONB row per listing per day), `raw.epoch_models` (one JSONB row per model) |
+| Audit | `raw.ingestion_log` (source, mode, snapshot_date, status, rows, message) |
+
+### Run it
+
+On the host (needs the docker stack up):
+```bash
+uv run python -m src.ingestion.gpu_deals seed       # one-time: 330 local files
+uv run python -m src.ingestion.gpu_deals backfill   # fill gaps from GitHub archive
+uv run python -m src.ingestion.gpu_deals daily      # today's deals
+uv run python -m src.ingestion.epoch_models snapshot  # Epoch AI CSV
+```
+
+Or inside docker (same commands work, no local Python needed):
+```bash
+docker compose --profile ingest run --rm ingestion src.ingestion.gpu_deals daily
+```
+
+### Verify
+
+```sql
+SELECT count(*), count(DISTINCT snapshot_date) FROM raw.gpu_deals;  -- 1.35M rows, 345 days
+SELECT source, mode, status, rows_loaded FROM raw.ingestion_log;
+```
+
 
 
 
@@ -57,13 +95,13 @@ docker compose down
 ```
 
 #### Servers
-| Server | url |
-|---|---|
-| PostgresSQL | postgres:5432|
-| PGAdmin | localhost:8085 |
-| Minio Objectstore | localhost:9000 |
-| MLFlow | localhost:5001 |
-| development | VS Code, servers are accessible. With above links. |
+| Server | Inside docker network | From your laptop (host) |
+|---|---|---|
+| PostgresSQL | postgres:5432 | localhost:5432 |
+| PGAdmin | — | localhost:8085 |
+| Minio Objectstore | objectstorage:9000 | localhost:9000 |
+| MLFlow | — | localhost:5001 |
+| development | VS Code, servers are accessible. With above links. | |
 
 #### Login PGAdmin
 
