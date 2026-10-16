@@ -39,6 +39,12 @@ CREATE TABLE IF NOT EXISTS raw.ingestion_log (
     rows_loaded   INTEGER,
     message       TEXT
 );
+
+CREATE TABLE IF NOT EXISTS raw.source_versions (
+    source       TEXT PRIMARY KEY,
+    content_hash TEXT        NOT NULL,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
@@ -57,6 +63,31 @@ def get_conn() -> connection:
 def ensure_schema(conn: connection) -> None:
     with conn.cursor() as cur:
         cur.execute(DDL)
+    conn.commit()
+
+
+def get_source_hash(conn: connection, source: str) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT content_hash FROM raw.source_versions WHERE source = %s",
+            (source,),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def set_source_hash(conn: connection, source: str, content_hash: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO raw.source_versions (source, content_hash, updated_at)
+            VALUES (%s, %s, now())
+            ON CONFLICT (source)
+            DO UPDATE SET content_hash = EXCLUDED.content_hash,
+                          updated_at   = EXCLUDED.updated_at
+            """,
+            (source, content_hash),
+        )
     conn.commit()
 
 

@@ -26,6 +26,9 @@ RAW_BUCKET = "raw"
 
 GPU_REPO_RAW = "https://raw.githubusercontent.com/HardwareDealsCo/gpu-deals/main"
 
+# Epoch AI publishes direct CSV downloads (CC-BY, see README for citation).
+EPOCH_CSV_URL = "https://epoch.ai/data/notable_ai_models.csv"
+
 
 @dataclass(frozen=True)
 class Settings:

@@ -1,3 +1,36 @@
+x-airflow-common: &airflow-common
+  build:
+    context: ./containers/airflow
+  image: gpu-airflow:local
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    # LocalExecutor task runners fetch their workload via this API:
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-airflow_jwt_secret}
+    AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW__API_AUTH__JWT_ISSUER:-airflow}
+    # wiring so DAG tasks reach the project's services and src/ code
+    PYTHONPATH: /opt/airflow
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: 5432
+    POSTGRES_DB: ${POSTGRES_DB}
+    POSTGRES_USER: ${POSTGRES_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    MINIO_ENDPOINT: http://objectstorage:9000
+    MINIO_ADMIN: ${MINIO_ADMIN}
+    MINIO_SECRET: ${MINIO_SECRET}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./src:/opt/airflow/src:ro
+  user: "${AIRFLOW_UID:-50000}:0"
+  networks:
+    - development
+
 services:
   postgres:
     image: postgres:18.6-bookworm
@@ -125,11 +158,69 @@ services:
     networks:
       - development
 
+  # --- orchestration (Airflow) ---
 
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --role Admin \
+          --username "${AIRFLOW_ADMIN_USER:-airflow}" \
+          --password "${AIRFLOW_ADMIN_PASSWORD:-airflow}" \
+          --firstname Admin --lastname User --email admin@example.com || true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  airflow-apiserver:
+    <<: *airflow-common
+    container_name: airflow-apiserver
+    command: api-server
+    restart: unless-stopped
+    ports:
+      - 127.0.0.1:8080:8080 # Airflow UI / REST API
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-apiserver:
+        condition: service_healthy # LocalExecutor tasks use its execution API
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    container_name: airflow-dag-processor
+    command: dag-processor
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
 
 networks:
   development:
 volumes:
   pgadmin_data:
-
-  # airflow image and dependencies

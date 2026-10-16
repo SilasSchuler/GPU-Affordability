@@ -4,6 +4,7 @@
 # Docker volume data (local runtime state — never commit)
 postgres_data/
 s3_data/
+logs/
 
 # Source data — GPU snapshots are reproducible via
 # `python -m src.ingestion.gpu_deals backfill`; only the manually

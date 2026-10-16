@@ -1,167 +1,132 @@
 # GPU Affordability
 DENG Module Group Project
 
-GPU prices are rising rapidly, leaving many consumers uncertain about when to buy their preferred hardware. This issue is compounded by constant news coverage and frequent releases of new Large Language Models (LLMs).
-
-
-## Use Case
-
-This project provides a forecast to help small businesses and individuals look past the hype. It helps determine whether an intended GPU can be purchased at a reasonable price now, or if waiting is the better option.
-
-To achieve this, the project maintains a daily-updated table ranking GPUs into two categories: **Buy Now** vs. **Wait**.
-
+GPU prices are rising rapidly, leaving many consumers uncertain about when to buy. This project provides a forecast to help small businesses and individuals look past the hype: a daily-updated table ranking GPUs into **Buy Now** vs. **Wait**.
 
 ## Data
 
-- **Historical Hardware Deals:** A dataset tracking hardware deals since last year.
-  - **Source:** [HardwareDealsCo/gpu-deals](https://github.com/HardwareDealsCo/gpu-deals)
-  - **Details:** The source scrapes deal data from the website HardwareDeals.co, which compiles hardware listings from eBay.
-
-- **AI Release Milestones:** An additional dataset collecting major AI model releases and company announcements.
-  - **Details:** Gathered manually (or via scraping where feasible) to enhance the model's forecasting performance.
-
+- **GPU deals** — [HardwareDealsCo/gpu-deals](https://github.com/HardwareDealsCo/gpu-deals): daily JSON snapshots of eBay GPU listings (~4k listings/day).
+- **AI model releases** — [Epoch AI notable models](https://epoch.ai/data/ai-models): CSV of major AI model releases (CC-BY, see attribution below), used as forecast features.
 
 ## Architecture
 
-![Architecture v0.1](images/architecture_v0.1.png)
+**v0.2 — as implemented (local phase):**
 
-## Ingestion Pipeline (W7)
+```mermaid
+flowchart LR
+    subgraph sources [Sources]
+        GH["GPU deals<br/>(GitHub, daily JSON)"]
+        EP["Epoch AI models<br/>(CSV download)"]
+    end
 
-Scope: **extract both sources → land immutable raw copies in MinIO → load
-queryable JSONB rows in Postgres `raw` schema**. No cleaning, typing,
-deduplication or aggregation happens here — that is the W14 transformation
-phase. Every run is logged in `raw.ingestion_log` and is idempotent
-(re-running a snapshot replaces it, never duplicates).
+    AF["Airflow (LocalExecutor)<br/>gpu_deals_daily / epoch_models_weekly"]
 
-### Where the data lands
+    subgraph raw [Raw layer — immutable]
+        MINIO[("MinIO bucket 'raw'<br/>source files, dated keys")]
+        PGRAW[("Postgres schema 'raw'<br/>JSONB rows + ingestion_log")]
+    end
 
-| Layer | Location |
-|---|---|
-| Raw files | MinIO bucket `raw`: `gpu-deals/date=YYYY-MM-DD/GPU-YYYY-MM-DD.json`, `epoch-ai/load_date=YYYY-MM-DD/notable_models.csv` |
-| Raw tables | `raw.gpu_deals` (one JSONB row per listing per day), `raw.epoch_models` (one JSONB row per model) |
-| Audit | `raw.ingestion_log` (source, mode, snapshot_date, status, rows, message) |
+    STG[("staging.model_releases<br/>release calendar")]
 
-### Run it
-
-On the host (needs the docker stack up):
-```bash
-uv run python -m src.ingestion.gpu_deals seed       # one-time: 330 local files
-uv run python -m src.ingestion.gpu_deals backfill   # fill gaps from GitHub archive
-uv run python -m src.ingestion.gpu_deals daily      # today's deals
-uv run python -m src.ingestion.epoch_models snapshot  # Epoch AI CSV
+    GH --> AF
+    EP --> AF
+    AF --> MINIO
+    AF --> PGRAW
+    PGRAW --> STG
 ```
 
-Or inside docker (same commands work, no local Python needed):
+Changed decisions vs. the [v0.1 pitch](images/architecture_v0.1.png):
+- Local MinIO stands in for GCS (same S3 API — the cloud phase only changes the endpoint); BigQuery moves to W14.
+- Airflow orchestrates from the local phase on, as LocalExecutor (no redis/worker needed).
+- Epoch CSV comes from a stable download URL with a hash check — no scraping, no manual export.
+- Transformation starts with one justified deliverable (release calendar); the buy/wait curation stays in W14.
+
+## Setup
+
 ```bash
-docker compose --profile ingest run --rm ingestion src.ingestion.gpu_deals daily
+uv sync                  # python deps
+cp .env-example .env     # fill in; FERNET_KEY via:
+                         #   python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+docker compose up -d     # postgres, minio, mlflow, pgadmin, airflow
 ```
 
-### Verify
+## Running the pipelines
+
+Sources land as immutable files in MinIO (bucket `raw`) and as JSONB rows in the Postgres `raw` schema. Every load is idempotent (re-running a snapshot replaces it, never duplicates) and logged in `raw.ingestion_log`. No cleaning happens here — transformation is its own step below.
+
+On the host (docker stack must be up):
+```bash
+uv run python -m src.ingestion.gpu_deals backfill    # all history from GitHub
+uv run python -m src.ingestion.gpu_deals daily       # today's deals
+uv run python -m src.ingestion.epoch_models fetch    # models CSV (skipped if unchanged)
+```
+Also available: `gpu_deals seed` (loads pre-downloaded files from `data/GPU/`) and
+`docker compose --profile ingest run --rm ingestion src.ingestion.gpu_deals daily`
+(same pipeline inside docker, no local Python needed).
+
+Or via Airflow — UI at http://localhost:8080 (login `airflow` / `airflow`):
+
+| DAG | Schedule | Does |
+|---|---|---|
+| `gpu_deals_daily` | daily 06:00 UTC | one snapshot per logical date + row-count check |
+| `epoch_models_weekly` | Mon 07:00 UTC | hash-checked CSV refresh + release calendar rebuild |
+
+```bash
+docker compose exec airflow-scheduler airflow dags trigger gpu_deals_daily   # ad-hoc run
+docker compose exec airflow-scheduler airflow backfill create \
+  --dag-id gpu_deals_daily --from-date 2026-10-12 --to-date 2026-10-13       # backfill
+```
+
+## Transformation — release calendar
+
+`staging.model_releases` (model_name, organization, release_date, >= 2020) — the first
+transformation deliverable, derived from `raw.epoch_models`:
+
+```bash
+uv run python -m src.transformation.model_releases build
+```
+
+## Verify
 
 ```sql
 SELECT count(*), count(DISTINCT snapshot_date) FROM raw.gpu_deals;  -- 1.35M rows, 345 days
+SELECT count(*) FROM staging.model_releases;                        -- 628 rows
 SELECT source, mode, status, rows_loaded FROM raw.ingestion_log;
 ```
 
+## Servers
 
-
-
-## UV Environment
-
-UV is generous on both Windows and Mac devices, which makes it more generous for a group project.
-
-```
-uv init
-
-# On every update.
-uv sync
-
-# Add a new library to the project.
-uv add {library}
-
-# Run python scripts
-uv run {script}
-```
-
-
-## Docker Containers
-
-Build docker containers
-```
-docker compose up -d
-
-# When finished
-docker compose down
-```
-
-#### Servers
-| Server | Inside docker network | From your laptop (host) |
+| Server | Inside docker network | From your laptop |
 |---|---|---|
-| PostgresSQL | postgres:5432 | localhost:5432 |
-| PGAdmin | — | localhost:8085 |
-| Minio Objectstore | objectstorage:9000 | localhost:9000 |
-| MLFlow | — | localhost:5001 |
-| development | VS Code, servers are accessible. With above links. | |
+| Postgres | postgres:5432 | localhost:5432 |
+| MinIO | objectstorage:9000 | localhost:9000 |
+| pgAdmin | — | localhost:8085 |
+| Airflow UI | — | localhost:8080 (login airflow/airflow) |
+| MLflow | — | localhost:5001 |
 
-#### Login PGAdmin
+pgAdmin connection: host `postgres`, port `5432`, user `sharedUser`, password from `.env`.
 
-Server needs to be loaded manually, if interaction with PostgresSQL DB is required.
+## Attribution
 
-| Connection | Address used |
-|---|---|
-| Your laptop's browser → pgAdmin | `http://localhost:8085` | 
-| pgAdmin container → PostgreSQL container | Host `postgres`, port `5432`, user `sharedUser`, pw `in .env` | 
+Epoch AI model data is licensed CC-BY — cite *Epoch AI, 'Data on AI Models', epoch.ai/data/ai-models*.
 
-
-
-### Initial Plan
-
-#### W3 Pitch + Initial Project Setup
-- Data source
+## Initial Plan
 
 #### W7 Midterm
-- Ingestion pipeline (4); 
-- local storage/schema (2); 
-- Docker/reproducible environment (3); 
-- ReadMe with instructions required for Peer Reproducibility
-- Proper Review
-- Oral Defence (Understand entire codebase and decisions. Both team members.)
+- Ingestion pipeline (4); local storage/schema (2); Docker/reproducible environment (3);
+  ReadMe for Peer Reproducibility; Oral Defence (both team members).
 
-Silas:
-- Local Storage 
-  - s3
-- Docker environment
-  - Python script app for ingestion
-  - s3 volume
-  - MLFlow
-
-Natalie:
-- Ingestion
-
-Shared:
-- Reproducibility
-- ReadMe
-
+Silas: local storage (s3), Docker environment, MLflow.
+Natalie: ingestion.
+Shared: reproducibility, README.
 
 #### W14
-- Terraform/cloud infrastructure (3); 
-- cloud ingestion (3); 
-- transformation and warehouse design (3); 
-- orchestration, reliability and data quality (2); 
-- documentation, security and reproducibility (2):
-- Peer Review
-- Oral Defence (Understand entire codebase and decisions. Both team members.)
+- Terraform/cloud infrastructure (3); cloud ingestion (3); transformation and warehouse
+  design (3); orchestration, reliability and data quality (2); documentation, security
+  and reproducibility (2); Peer Review; Oral Defence.
 
-Silas:
-- transformation and warehouse design
-- cloud ingestion
+Silas: transformation and warehouse design, cloud ingestion.
+Natalie: Terraform/cloud infrastructure, orchestration, reliability and data quality.
+Shared: documentation, security and reproducibility.
 
-
-Natalie:
-- Terraform/cloud infrastructure
-- orchestration, reliability and data quality
-
-Shared:
-- documentation, security and reproducibility
-
-Optional: Compare classification with prognosis model with prediction for next day. 
+Optional: compare classification with a prognosis model predicting the next day.

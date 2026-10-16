@@ -93,6 +93,46 @@ def already_loaded(conn) -> set[date]:
         return {r[0] for r in cur.fetchall()}
 
 
+# ------------------------------------------------------------------ fetch
+
+class UpstreamGapError(Exception):
+    """The source has no file for this date (upstream publication gap)."""
+
+
+def fetch_historical(day: date) -> bytes | None:
+    """The archived daily file for `day`, or None if upstream has no gap."""
+    url = f"{GPU_REPO_RAW}/historical-gpu-deals-data/GPU-{day.isoformat()}.json"
+    resp = requests.get(url, timeout=60)
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    return resp.content
+
+
+def fetch_current() -> bytes:
+    resp = requests.get(f"{GPU_REPO_RAW}/current-gpu-deals.json", timeout=60)
+    resp.raise_for_status()
+    return resp.content
+
+
+def ingest_date(day: date, mode: str) -> None:
+    """Load the snapshot for one logical date (used by CLI and Airflow DAG).
+
+    Historical file first; only for today fall back to current-gpu-deals.json
+    (the archive file for today may not be published yet). Any other 404 is
+    an upstream gap and raises UpstreamGapError.
+    """
+    raw = fetch_historical(day)
+    source_file = f"GPU-{day.isoformat()}.json"
+    if raw is None:
+        if day == date.today():
+            raw = fetch_current()
+            source_file = "current-gpu-deals.json"
+        else:
+            raise UpstreamGapError(f"no upstream file for {day}")
+    load_snapshot(day, raw, source_file=source_file, mode=mode)
+
+
 # ---------------------------------------------------------------- modes
 
 def mode_seed(limit: int | None) -> None:
@@ -111,11 +151,8 @@ def mode_seed(limit: int | None) -> None:
 
 
 def mode_daily(day: date) -> None:
-    url = f"{GPU_REPO_RAW}/current-gpu-deals.json"
-    resp = requests.get(url, timeout=60)
-    resp.raise_for_status()
-    load_snapshot(day, resp.content, source_file="current-gpu-deals.json", mode="daily")
-    print(f"daily: {day} ok ({len(resp.content)} bytes)")
+    ingest_date(day, mode="daily")
+    print(f"daily: {day} ok")
 
 
 def mode_backfill(start: date, end: date) -> None:
@@ -131,16 +168,11 @@ def mode_backfill(start: date, end: date) -> None:
         if day in loaded:
             day += timedelta(days=1)
             continue
-        name = f"GPU-{day.isoformat()}.json"
-        url = f"{GPU_REPO_RAW}/historical-gpu-deals-data/{name}"
-        resp = requests.get(url, timeout=60)
-        if resp.status_code == 404:
+        try:
+            ingest_date(day, mode="backfill")
+            print(f"  {day} ok")
+        except UpstreamGapError:
             print(f"  {day} upstream gap (404), skipped")
-            day += timedelta(days=1)
-            continue
-        resp.raise_for_status()
-        load_snapshot(day, resp.content, source_file=name, mode="backfill")
-        print(f"  {day} ok")
         day += timedelta(days=1)
 
 
