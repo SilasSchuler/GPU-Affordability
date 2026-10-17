@@ -77,13 +77,20 @@ docker compose exec airflow-scheduler airflow backfill create \
   --dag-id gpu_deals_daily --from-date 2026-10-12 --to-date 2026-10-13       # backfill
 ```
 
-## Transformation — release calendar
+## Transformation 
 
-`staging.model_releases` (model_name, organization, release_date, >= 2020) — the first
+`staging.model_releases` (id, model_name, organization, release_date, >= 2020) — the first
 transformation deliverable, derived from `raw.epoch_models`:
 
 ```bash
 uv run python -m src.transformation.model_releases build
+```
+
+`staging.gpu_deals` (id, title, brand, price, currency, condition, link, source, item_group_type, chipset, vram_gb, scraped_at, model_release_id, days_since_llm_release)
+- the second transformation deliverable, derived from `raw.gpu_deals` with reference to `staging.model_releases` and transformed column days_since_llm_release.
+
+```bash
+uv run python -m src.transformation.gpu_deals build
 ```
 
 ## Verify

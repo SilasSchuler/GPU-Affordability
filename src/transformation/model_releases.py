@@ -21,6 +21,7 @@ TARGET = "staging.model_releases"
 
 DDL = f"""
 CREATE TABLE IF NOT EXISTS {TARGET} (
+    ID BIGSERIAL PRIMARY KEY,
     model_name   TEXT NOT NULL,
     organization TEXT,
     release_date DATE NOT NULL,
