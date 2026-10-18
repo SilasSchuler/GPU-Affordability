@@ -1,4 +1,4 @@
-"""Daily GPU deals ingestion: one snapshot per logical date + row-count check.
+"""Daily GPU deals ingestion: one snapshot per logical date + row-count check + transformation into staging.
 
 Reruns/backfills are safe — loads are idempotent (delete+reload per
 snapshot_date). Upstream publication gaps are marked `skipped`, not failed.
@@ -13,6 +13,7 @@ from airflow.sdk.exceptions import AirflowSkipException
 
 from src.ingestion.db import get_conn
 from src.ingestion.gpu_deals import UpstreamGapError, ingest_date
+from src.transformation.gpu_deals import build as build_staging
 
 MIN_EXPECTED_ROWS = 1000
 
@@ -23,7 +24,7 @@ MIN_EXPECTED_ROWS = 1000
     schedule="0 6 * * *",
     start_date=datetime(2025, 9, 19),
     catchup=False,
-    tags=["ingestion", "gpu_deals"],
+    tags=["ingestion", "gpu_deals", "transformation"],
     default_args={"retries": 2, "retry_delay": timedelta(minutes=5)},
 )
 def gpu_deals_daily():
@@ -41,7 +42,7 @@ def gpu_deals_daily():
         return day.isoformat()
 
     @task
-    def verify_snapshot(day_iso: str) -> None:
+    def verify_snapshot(day_iso: str) -> str:
         day = date.fromisoformat(day_iso)
         conn = get_conn()
         try:
@@ -56,8 +57,17 @@ def gpu_deals_daily():
         if count < MIN_EXPECTED_ROWS:
             raise ValueError(f"{day}: only {count} rows loaded (< {MIN_EXPECTED_ROWS})")
         print(f"verified {day}: {count} rows")
+        return day_iso
 
-    verify_snapshot(load_snapshot())
+    @task
+    def transform_snapshot(day_iso: str) -> None:
+       day = date.fromisoformat(day_iso)
+       inserted = build_staging(day)
+       print(f"transformed {day}: {inserted} rows into staging.gpu_deals")
+       if inserted < MIN_EXPECTED_ROWS:
+            raise ValueError(f"{day}: transform produced only {inserted} rows (< {MIN_EXPECTED_ROWS})")
+
+    transform_snapshot(verify_snapshot(load_snapshot()))
 
 
 gpu_deals_daily()

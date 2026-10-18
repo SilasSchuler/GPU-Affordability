@@ -13,6 +13,7 @@ Rerunnable: TRUNCATE + INSERT from the latest raw version. Raw stays intact.
 
 from __future__ import annotations
 
+from datetime import date
 import sys
 
 from ..ingestion.db import get_conn
@@ -39,7 +40,7 @@ CREATE TABLE IF NOT EXISTS {TARGET} (
 );
 """
 
-BUILD_SQL = f"""
+BUILD_SQL_ALL = f"""
 INSERT INTO {TARGET} (
    title, brand, price, currency, condition, link, source,
    item_group_type, chipset, vram_gb, scraped_at,
@@ -70,17 +71,72 @@ LEFT JOIN LATERAL (
 WHERE d.payload ->> 'title' IS NOT NULL;
 """
 
+BUILD_SQL_DAY = f"""
+INSERT INTO {TARGET} (
+   title, brand, price, currency, condition, link, source,
+   item_group_type, chipset, vram_gb, scraped_at,
+   model_release_id, days_since_llm_release
+)
+SELECT DISTINCT
+   d.payload ->> 'title',
+   d.payload ->> 'brand',
+   (d.payload ->> 'price')::NUMERIC(10,2),
+   d.payload ->> 'currency',
+   d.payload ->> 'condition',
+   d.payload ->> 'link',
+   d.payload ->> 'source',
+   d.payload ->> 'itemGroupType',
+   d.payload ->> 'chipset',
+   (d.payload ->> 'vram_gb')::NUMERIC(6,2),
+   d.snapshot_date,
+   m.id,
+   d.snapshot_date::date - m.release_date
+FROM raw.gpu_deals d
+LEFT JOIN LATERAL (
+   SELECT r.id, r.release_date
+   FROM staging.model_releases r
+   WHERE r.release_date <= d.snapshot_date::date
+   ORDER BY r.release_date DESC, r.id DESC
+   LIMIT 1
+) m ON TRUE
+WHERE d.payload ->> 'title' IS NOT NULL
+    AND d.snapshot_date = %(day)s;
+"""
 
-def build() -> int:
+DELETE_SQL_DAY = "DELETE FROM staging.gpu_deals WHERE scraped_at::date = %(day)s"
+
+
+
+def build_history() -> int:
     """Rebuild staging.gpu_deals from the latest raw version."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(DDL)
             cur.execute(f"TRUNCATE {TARGET}")
-            cur.execute(BUILD_SQL)
+            cur.execute(BUILD_SQL_ALL)
             count = cur.rowcount
         conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        raise exc
+    finally:
+        conn.close()
+    return count
+
+def build(day: date) -> int:
+    """Rebuild staging.gpu_deals from the raw version for a specific day."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(DDL)
+            cur.execute(DELETE_SQL_DAY, {"day": day})
+            cur.execute(BUILD_SQL_DAY, {"day": day})
+            count = cur.rowcount
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        raise exc
     finally:
         conn.close()
     return count
@@ -90,7 +146,7 @@ def main() -> None:
     if len(sys.argv) != 2 or sys.argv[1] != "build":
         print("usage: python -m src.transformation.gpu_deals build")
         sys.exit(1)
-    count = build()
+    count = build_history()
     print(f"gpu_deals: built {count} rows -> {TARGET}")
 
 

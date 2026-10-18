@@ -8,7 +8,7 @@ Operations: select+rename, cast the date string to DATE, drop unparseable
 dates, deduplicate, and apply the business rule release_date >= 2020
 (the filter that used to be applied manually in the Epoch web UI).
 
-Rerunnable: TRUNCATE + INSERT from the latest raw version. Raw stays intact.
+Rerunnable: UPSERT from the latest raw version. Raw stays intact.
 """
 
 from __future__ import annotations
@@ -25,23 +25,28 @@ CREATE TABLE IF NOT EXISTS {TARGET} (
     model_name   TEXT NOT NULL,
     organization TEXT,
     release_date DATE NOT NULL,
-    built_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    built_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (model_name, release_date)
 );
 """
 
 BUILD_SQL = f"""
-INSERT INTO {TARGET} (model_name, organization, release_date)
-SELECT DISTINCT
-       payload->>'Model'                    AS model_name,
-       payload->>'Organization'             AS organization,
-       (payload->>'Publication date')::date AS release_date
-  FROM raw.epoch_models
- WHERE load_date = (SELECT max(load_date) FROM raw.epoch_models)
-   AND payload->>'Model' IS NOT NULL
-   AND payload->>'Publication date' ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$'
-   AND (payload->>'Publication date')::date >= DATE '2020-01-01';
-"""
-
+   INSERT INTO {TARGET} (model_name, organization, release_date)
+   SELECT DISTINCT ON (payload->>'Model', (payload->>'Publication date')::date)
+          payload->>'Model',
+          payload->>'Organization',
+          (payload->>'Publication date')::date
+     FROM raw.epoch_models
+    WHERE load_date = (SELECT max(load_date) FROM raw.epoch_models)
+      AND payload->>'Model' IS NOT NULL
+      AND payload->>'Publication date' ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$'
+      AND (payload->>'Publication date')::date >= DATE '2020-01-01'
+    ORDER BY payload->>'Model', (payload->>'Publication date')::date,
+             payload->>'Organization'
+   ON CONFLICT (model_name, release_date)
+   DO UPDATE SET organization = EXCLUDED.organization,
+                 built_at = now();
+   """
 
 def build() -> int:
     """Rebuild staging.model_releases from the latest raw version."""
@@ -49,7 +54,6 @@ def build() -> int:
     try:
         with conn.cursor() as cur:
             cur.execute(DDL)
-            cur.execute(f"TRUNCATE {TARGET}")
             cur.execute(BUILD_SQL)
             count = cur.rowcount
         conn.commit()
