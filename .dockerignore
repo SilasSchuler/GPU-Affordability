@@ -1,0 +1,8 @@
+.git
+.venv
+__pycache__
+data/
+postgres_data/
+s3_data/
+*.md
+!README.md

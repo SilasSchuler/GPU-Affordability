@@ -1,0 +1,14 @@
+FROM python:3.13-slim-bookworm
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+WORKDIR /app
+
+# Dependencies from the lockfile (reproducible, same as host `uv sync`).
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-dev
+
+COPY src ./src
+
+# Usage: docker compose --profile ingest run --rm ingestion \
+#          src.ingestion.gpu_deals daily
+ENTRYPOINT ["uv", "run", "--no-sync", "python", "-m"]

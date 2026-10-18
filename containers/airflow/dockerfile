@@ -1,0 +1,10 @@
+FROM apache/airflow:3.3.2
+
+# Project dependencies so DAGs can import src.ingestion / src.transformation.
+# Versions pinned to match uv.lock (host dev environment).
+USER airflow
+RUN pip install --no-cache-dir \
+    requests==2.34.2 \
+    boto3==1.43.113 \
+    psycopg2-binary==2.9.13 \
+    python-dotenv==1.2.4

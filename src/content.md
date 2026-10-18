@@ -1,2 +1,3 @@
-Will contain ingestion scripts.
-Load into Airflow container to run as required. Or schedule later.
+# src/
+
+Pipeline code: `ingestion/` (raw layer) and `transformation/` (staging). See README.
