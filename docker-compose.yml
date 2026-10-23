@@ -158,6 +158,53 @@ services:
     networks:
       - development
 
+  # --- orchestration (Kestra) ---
+
+  kestra-db-init:
+    image: postgres:18.6-bookworm
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        psql -h postgres -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -tAc "SELECT 1 FROM pg_database WHERE datname='kestra'" | grep -q 1 \
+          || psql -h postgres -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c "CREATE DATABASE kestra"
+    networks:
+      - development
+
+  kestra:
+    image: kestra/kestra:v1.1
+    user: root
+    command: server standalone --config /etc/kestra/application.yaml
+    ports:
+      - "127.0.0.1:${KESTRA_PORT:-8082}:8080"
+    environment:
+      DATASOURCES_POSTGRES_URL: jdbc:postgresql://postgres:5432/kestra
+      DATASOURCES_POSTGRES_DRIVERCLASSNAME: org.postgresql.Driver
+      DATASOURCES_POSTGRES_USERNAME: ${POSTGRES_USER}
+      DATASOURCES_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      KESTRA_LOGIN_USER: ${KESTRA_USER:?Set KESTRA_USER in .env}
+      KESTRA_LOGIN_PASSWORD: ${KESTRA_PASSWORD:?Set KESTRA_PASSWORD in .env}
+      ENV_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      ENV_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      ENV_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      ENV_NETWORK: gpu-development
+    volumes:
+      - kestra_files:/app/storage
+      - ./application.yaml:/etc/kestra/application.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kestra-db-init:
+        condition: service_completed_successfully
+    networks:
+      - development
+
+
   # --- orchestration (Airflow) ---
 
   airflow-init:
@@ -183,7 +230,7 @@ services:
     command: api-server
     restart: unless-stopped
     ports:
-      - 127.0.0.1:8080:8080 # Airflow UI / REST API
+      - 127.0.0.1:8081:8080 # Airflow UI / REST API
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
       interval: 30s
@@ -222,5 +269,7 @@ services:
 
 networks:
   development:
+    name: gpu-development
 volumes:
   pgadmin_data:
+  kestra_files:

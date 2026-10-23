@@ -1,0 +1,32 @@
+kestra:
+  server:
+    basicAuth:
+      username: "${KESTRA_LOGIN_USER}"
+      password: "${KESTRA_LOGIN_PASSWORD}"
+  tutorialFlows:
+    enabled: false
+  repository:
+    type: postgres
+  queue:
+    type: postgres
+  storage:
+    type: local
+    local:
+      basePath: /app/storage
+  url: http://localhost:8082/
+  tasks:
+    tmpDir:
+      path: /tmp/kestra-wd
+  plugins:
+    configurations:
+      - type: io.kestra.plugin.scripts.runner.docker.Docker
+        values:
+          volume-enabled: true
+  
+  
+datasources:
+  postgres:
+    url: jdbc:postgresql://postgres:5432/kestra
+    driverClassName: org.postgresql.Driver
+    username: ${DATASOURCES_POSTGRES_USERNAME}
+    password: ${DATASOURCES_POSTGRES_PASSWORD}
