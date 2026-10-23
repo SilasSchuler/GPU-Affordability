@@ -1,0 +1,120 @@
+id: gpu_deals_daily
+namespace: gpu
+description: Ingest the daily GPU deals snapshot into the raw layer, verify it, transform into staging.
+
+labels:
+  stage: ingestion
+  source: gpu_deals
+
+variables:
+  day: "{{ (trigger.date ?? execution.startDate) | date('yyyy-MM-dd') }}"
+  min_rows: 1000
+
+pluginDefaults:
+  - type: io.kestra.plugin.scripts.shell.Commands
+    values:
+      containerImage: gpu-ingestion:local
+      taskRunner:
+        type: io.kestra.plugin.scripts.runner.docker.Docker
+        pullPolicy: NEVER
+        networkMode: "{{ envs.network }}"
+        entryPoint: []
+      env:
+        PYTHONPATH: /app
+        POSTGRES_HOST: postgres
+        POSTGRES_PORT: "5432"
+        POSTGRES_DB: "{{ envs.db }}"
+        POSTGRES_USER: "{{ envs.user }}"
+        POSTGRES_PASSWORD: "{{ envs.password }}"
+        MINIO_ENDPOINT: http://objectstorage:9000
+        MINIO_ADMIN: "{{ envs.minio_admin }}"
+        MINIO_SECRET: "{{ envs.minio_secret }}"
+
+tasks:
+  - id: load_snapshot
+    type: io.kestra.plugin.scripts.shell.Commands
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 3
+    inputFiles:
+      load_snapshot.py: |
+        import json
+        import sys
+        from datetime import date
+
+        from src.ingestion.gpu_deals import UpstreamGapError, ingest_date
+
+        day = date.fromisoformat(sys.argv[1])
+        mode = "daily" if day == date.today() else "backfill"
+        try:
+            ingest_date(day, mode=mode)
+        except UpstreamGapError as exc:
+            print(f"skipped {day}: {exc}")
+            print("::" + json.dumps({"outputs": {"status": "gap"}}) + "::")
+        else:
+            print("::" + json.dumps({"outputs": {"status": "loaded"}}) + "::")
+    commands:
+      - python load_snapshot.py {{ vars.day }}
+
+  - id: verify_snapshot
+    type: io.kestra.plugin.scripts.shell.Commands
+    runIf: "{{ outputs.load_snapshot.vars.status == 'loaded' }}"
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 3
+    inputFiles:
+      verify_snapshot.py: |
+        import sys
+        from datetime import date
+
+        from src.ingestion.db import get_conn
+
+        day = date.fromisoformat(sys.argv[1])
+        min_rows = int(sys.argv[2])
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*) FROM raw.gpu_deals WHERE snapshot_date = %s",
+                    (day,),
+                )
+                count = cur.fetchone()[0]
+        finally:
+            conn.close()
+        if count < min_rows:
+            sys.exit(f"{day}: only {count} rows loaded (< {min_rows})")
+        print(f"verified {day}: {count} rows")
+    commands:
+      - python verify_snapshot.py {{ vars.day }} {{ vars.min_rows }}
+
+  - id: transform_snapshot
+    type: io.kestra.plugin.scripts.shell.Commands
+    runIf: "{{ outputs.load_snapshot.vars.status == 'loaded' }}"
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 3
+    inputFiles:
+      transform_snapshot.py: |
+        import sys
+        from datetime import date
+
+        from src.transformation.gpu_deals import build as build_staging
+
+        day = date.fromisoformat(sys.argv[1])
+        min_rows = int(sys.argv[2])
+        inserted = build_staging(day)
+        print(f"transformed {day}: {inserted} rows into staging.gpu_deals")
+        if inserted < min_rows:
+            sys.exit(f"{day}: transform produced only {inserted} rows (< {min_rows})")
+    commands:
+      - python transform_snapshot.py {{ vars.day }} {{ vars.min_rows }}
+
+triggers:
+  - id: daily_0600
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 6 * * *"
+    timezone: UTC
+    recoverMissedSchedules: LAST

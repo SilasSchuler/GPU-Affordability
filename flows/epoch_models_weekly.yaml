@@ -1,0 +1,61 @@
+id: epoch_models_weekly
+namespace: gpu
+description: Refresh the Epoch AI models CSV when changed; rebuild the release calendar.
+
+labels:
+  stage: ingestion
+  source: epoch_models
+
+variables:
+  day: "{{ (trigger.date ?? execution.startDate) | date('yyyy-MM-dd') }}"
+
+pluginDefaults:
+  - type: io.kestra.plugin.scripts.shell.Commands
+    values:
+      containerImage: gpu-ingestion:local
+      taskRunner:
+        type: io.kestra.plugin.scripts.runner.docker.Docker
+        pullPolicy: NEVER
+        networkMode: "{{ envs.network }}"
+        entryPoint: []
+      env:
+        PYTHONPATH: /app
+        POSTGRES_HOST: postgres
+        POSTGRES_PORT: "5432"
+        POSTGRES_DB: "{{ envs.db }}"
+        POSTGRES_USER: "{{ envs.user }}"
+        POSTGRES_PASSWORD: "{{ envs.password }}"
+        MINIO_ENDPOINT: http://objectstorage:9000
+        MINIO_ADMIN: "{{ envs.minio_admin }}"
+        MINIO_SECRET: "{{ envs.minio_secret }}"
+
+tasks:
+  - id: fetch_and_load
+    type: io.kestra.plugin.scripts.shell.Commands
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 3
+    commands:
+      - >-
+        python -c "from datetime import date;
+        from src.ingestion.epoch_models import mode_fetch;
+        mode_fetch(date.fromisoformat('{{ vars.day }}'))"
+
+  - id: build_model_releases
+    type: io.kestra.plugin.scripts.shell.Commands
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 3
+    commands:
+      - >-
+        python -c "from src.transformation.model_releases import build;
+        print('staging.model_releases rebuilt:', build(), 'rows')"
+
+triggers:
+  - id: weekly_monday
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 7 * * 1"
+    timezone: UTC
+    recoverMissedSchedules: LAST

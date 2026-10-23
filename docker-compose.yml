@@ -192,6 +192,8 @@ services:
       ENV_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
       ENV_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       ENV_NETWORK: gpu-development
+      ENV_MINIO_ADMIN: ${MINIO_ADMIN}
+      ENV_MINIO_SECRET: ${MINIO_SECRET}
     volumes:
       - kestra_files:/app/storage
       - ./application.yaml:/etc/kestra/application.yaml:ro
