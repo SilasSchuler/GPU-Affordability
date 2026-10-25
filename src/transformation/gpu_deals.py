@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import date
 import sys
 
-from ..ingestion.db import get_conn
+from ..ingestion.db import STAGING_SCHEMA_LOCK, get_conn
 from .model_releases import build as build_model_releases
 
 TARGET = "staging.gpu_deals"
@@ -117,6 +117,7 @@ def build_history() -> int:
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (STAGING_SCHEMA_LOCK,))
             cur.execute(DDL)
             cur.execute(f"TRUNCATE {TARGET}")
             cur.execute(BUILD_SQL_ALL)
@@ -135,6 +136,7 @@ def build(day: date) -> int:
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (STAGING_SCHEMA_LOCK,))
             cur.execute(DDL)
             cur.execute(DELETE_SQL_DAY, {"day": day})
             cur.execute(BUILD_SQL_DAY, {"day": day})

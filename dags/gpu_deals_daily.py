@@ -24,6 +24,7 @@ MIN_EXPECTED_ROWS = 1000
     schedule="0 6 * * *",
     start_date=datetime(2025, 9, 19),
     catchup=False,
+    max_active_runs=1,
     tags=["ingestion", "gpu_deals", "transformation"],
     default_args={"retries": 2, "retry_delay": timedelta(minutes=5)},
 )

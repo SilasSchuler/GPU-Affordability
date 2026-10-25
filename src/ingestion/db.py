@@ -11,6 +11,9 @@ from psycopg2.extensions import connection
 
 from .config import SETTINGS
 
+RAW_SCHEMA_LOCK = 8_001_001
+STAGING_SCHEMA_LOCK = 8_001_002
+
 DDL = """
 CREATE SCHEMA IF NOT EXISTS raw;
 
@@ -64,6 +67,7 @@ def get_conn() -> connection:
 
 def ensure_schema(conn: connection) -> None:
     with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (RAW_SCHEMA_LOCK,))
         cur.execute(DDL)
     conn.commit()
 
