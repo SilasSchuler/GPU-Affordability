@@ -21,6 +21,7 @@ from src.transformation.model_releases import build
     schedule="0 7 * * 1",
     start_date=datetime(2026, 1, 5),
     catchup=False,
+    max_active_runs=1,
     tags=["ingestion", "epoch_models", "transformation"],
     default_args={"retries": 2, "retry_delay": timedelta(minutes=5)},
 )

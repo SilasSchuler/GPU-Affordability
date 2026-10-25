@@ -24,6 +24,7 @@ MIN_EXPECTED_ROWS = 1000
     schedule="0 6 * * *",
     start_date=datetime(2025, 9, 19),
     catchup=False,
+    max_active_runs=1,
     tags=["ingestion", "gpu_deals", "transformation"],
     default_args={"retries": 2, "retry_delay": timedelta(minutes=5)},
 )
@@ -61,10 +62,10 @@ def gpu_deals_daily():
 
     @task
     def transform_snapshot(day_iso: str) -> None:
-       day = date.fromisoformat(day_iso)
-       inserted = build_staging(day)
-       print(f"transformed {day}: {inserted} rows into staging.gpu_deals")
-       if inserted < MIN_EXPECTED_ROWS:
+        day = date.fromisoformat(day_iso)
+        inserted = build_staging(day)
+        print(f"transformed {day}: {inserted} rows into staging.gpu_deals")
+        if inserted < MIN_EXPECTED_ROWS:
             raise ValueError(f"{day}: transform produced only {inserted} rows (< {MIN_EXPECTED_ROWS})")
 
     transform_snapshot(verify_snapshot(load_snapshot()))

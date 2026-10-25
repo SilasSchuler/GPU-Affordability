@@ -11,7 +11,12 @@ from psycopg2.extensions import connection
 
 from .config import SETTINGS
 
+RAW_SCHEMA_LOCK = 8_001_001
+STAGING_SCHEMA_LOCK = 8_001_002
+
 DDL = """
+CREATE SCHEMA IF NOT EXISTS raw;
+
 CREATE TABLE IF NOT EXISTS raw.gpu_deals (
     id            BIGSERIAL PRIMARY KEY,
     snapshot_date DATE        NOT NULL,
@@ -62,6 +67,7 @@ def get_conn() -> connection:
 
 def ensure_schema(conn: connection) -> None:
     with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (RAW_SCHEMA_LOCK,))
         cur.execute(DDL)
     conn.commit()
 
@@ -143,6 +149,7 @@ class IngestionRun:
             message = "".join(
                 traceback.format_exception(exc_type, exc_val, exc_tb)
             )[-4000:]
+            self.conn.rollback()
         with self.conn.cursor() as cur:
             cur.execute(
                 """
