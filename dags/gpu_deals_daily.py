@@ -61,10 +61,10 @@ def gpu_deals_daily():
 
     @task
     def transform_snapshot(day_iso: str) -> None:
-       day = date.fromisoformat(day_iso)
-       inserted = build_staging(day)
-       print(f"transformed {day}: {inserted} rows into staging.gpu_deals")
-       if inserted < MIN_EXPECTED_ROWS:
+        day = date.fromisoformat(day_iso)
+        inserted = build_staging(day)
+        print(f"transformed {day}: {inserted} rows into staging.gpu_deals")
+        if inserted < MIN_EXPECTED_ROWS:
             raise ValueError(f"{day}: transform produced only {inserted} rows (< {MIN_EXPECTED_ROWS})")
 
     transform_snapshot(verify_snapshot(load_snapshot()))

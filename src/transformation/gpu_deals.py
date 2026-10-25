@@ -1,14 +1,15 @@
 """GPU deals -> staging.gpu_deals.
 
-Justification: the pitch defines a release calendar (model_name,
-organization, release_date) as input to the Buy/Wait forecast — the raw
-table (45 JSONB fields) can't serve that directly.
+Justification: the Buy/Wait use case needs queryable deal rows with a
+release context. The raw layer stores 45-field JSONB payloads; this table
+selects the fields used for analysis, computes price per GB, and links each
+deal to the latest AI model release on or before its snapshot date.
 
-Operations: select+rename, cast the date string to DATE, drop unparseable
-dates, deduplicate, and apply the business rule release_date >= 2020
-(the filter that used to be applied manually in the Epoch web UI).
+Operations: select+rename, cast strings to typed columns, deduplicate exact
+duplicate listings, compute price per GB, and join the release calendar.
 
-Rerunnable: TRUNCATE + INSERT from the latest raw version. Raw stays intact.
+Rerunnable: TRUNCATE + INSERT for the full history, or DELETE + INSERT for
+one snapshot date. Raw stays intact.
 """
 
 from __future__ import annotations
@@ -17,10 +18,13 @@ from datetime import date
 import sys
 
 from ..ingestion.db import get_conn
+from .model_releases import build as build_model_releases
 
 TARGET = "staging.gpu_deals"
 
 DDL = f"""
+CREATE SCHEMA IF NOT EXISTS staging;
+
 CREATE TABLE IF NOT EXISTS {TARGET} (
 	ID BIGSERIAL PRIMARY KEY,
 	TITLE TEXT NOT NULL,
@@ -109,6 +113,7 @@ DELETE_SQL_DAY = "DELETE FROM staging.gpu_deals WHERE scraped_at::date = %(day)s
 
 def build_history() -> int:
     """Rebuild staging.gpu_deals from the latest raw version."""
+    build_model_releases()
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -126,6 +131,7 @@ def build_history() -> int:
 
 def build(day: date) -> int:
     """Rebuild staging.gpu_deals from the raw version for a specific day."""
+    build_model_releases()
     conn = get_conn()
     try:
         with conn.cursor() as cur:

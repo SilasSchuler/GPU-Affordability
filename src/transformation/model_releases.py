@@ -20,6 +20,8 @@ from ..ingestion.db import get_conn
 TARGET = "staging.model_releases"
 
 DDL = f"""
+CREATE SCHEMA IF NOT EXISTS staging;
+
 CREATE TABLE IF NOT EXISTS {TARGET} (
     ID BIGSERIAL PRIMARY KEY,
     model_name   TEXT NOT NULL,

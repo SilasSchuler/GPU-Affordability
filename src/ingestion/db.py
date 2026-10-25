@@ -12,6 +12,8 @@ from psycopg2.extensions import connection
 from .config import SETTINGS
 
 DDL = """
+CREATE SCHEMA IF NOT EXISTS raw;
+
 CREATE TABLE IF NOT EXISTS raw.gpu_deals (
     id            BIGSERIAL PRIMARY KEY,
     snapshot_date DATE        NOT NULL,
@@ -143,6 +145,7 @@ class IngestionRun:
             message = "".join(
                 traceback.format_exception(exc_type, exc_val, exc_tb)
             )[-4000:]
+            self.conn.rollback()
         with self.conn.cursor() as cur:
             cur.execute(
                 """
