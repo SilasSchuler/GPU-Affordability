@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import sys
 
-from ..ingestion.db import get_conn
+from ..ingestion.db import STAGING_SCHEMA_LOCK, get_conn
 
 TARGET = "staging.model_releases"
 
 DDL = f"""
+CREATE SCHEMA IF NOT EXISTS staging;
+
 CREATE TABLE IF NOT EXISTS {TARGET} (
     ID BIGSERIAL PRIMARY KEY,
     model_name   TEXT NOT NULL,
@@ -53,6 +55,7 @@ def build() -> int:
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (STAGING_SCHEMA_LOCK,))
             cur.execute(DDL)
             cur.execute(BUILD_SQL)
             count = cur.rowcount

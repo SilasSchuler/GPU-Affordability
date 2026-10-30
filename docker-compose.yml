@@ -25,7 +25,7 @@ x-airflow-common: &airflow-common
     MINIO_SECRET: ${MINIO_SECRET}
   volumes:
     - ./dags:/opt/airflow/dags
-    - ./logs:/opt/airflow/logs
+    - airflow_logs:/opt/airflow/logs
     - ./src:/opt/airflow/src:ro
   user: "${AIRFLOW_UID:-50000}:0"
   networks:
@@ -274,4 +274,5 @@ networks:
     name: gpu-development
 volumes:
   pgadmin_data:
+  airflow_logs:
   kestra_files:

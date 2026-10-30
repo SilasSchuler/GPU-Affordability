@@ -107,11 +107,15 @@ def mode_fetch(day: date) -> None:
                 run.message = "unchanged (sha256 match), nothing loaded"
             print(f"fetch: {day} unchanged (sha256 {content_hash[:12]}…)")
             return
-        set_source_hash(conn, SOURCE, content_hash)
     finally:
         conn.close()
 
     rows = load_csv(raw_bytes, CSV_NAME, day, mode="fetch")
+    conn = get_conn()
+    try:
+        set_source_hash(conn, SOURCE, content_hash)
+    finally:
+        conn.close()
     print(f"fetch: {day} changed -> loaded {rows} rows ({content_hash[:12]}…)")
 
 

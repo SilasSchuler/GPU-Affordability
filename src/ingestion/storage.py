@@ -20,7 +20,10 @@ def get_client() -> BaseClient:
 def ensure_bucket(client: BaseClient, bucket: str = RAW_BUCKET) -> None:
     existing = {b["Name"] for b in client.list_buckets().get("Buckets", [])}
     if bucket not in existing:
-        client.create_bucket(Bucket=bucket)
+        try:
+            client.create_bucket(Bucket=bucket)
+        except client.exceptions.BucketAlreadyOwnedByYou:
+            pass
 
 
 def upload_bytes(client: BaseClient, key: str, data: bytes, bucket: str = RAW_BUCKET) -> None:
