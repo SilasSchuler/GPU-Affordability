@@ -1,0 +1,68 @@
+id: gpu_deals_daily
+namespace: gpu
+description: Ingest the daily GPU deals snapshot into the raw layer, verify it, transform into staging.
+
+labels:
+  stage: ingestion
+  source: gpu_deals
+
+concurrency:
+  limit: 1
+  behavior: QUEUE
+
+pluginDefaults:
+  - type: io.kestra.plugin.scripts.shell.Commands
+    values:
+      containerImage: gpu-ingestion:local
+      taskRunner:
+        type: io.kestra.plugin.scripts.runner.docker.Docker
+        pullPolicy: NEVER
+        networkMode: "{{ envs.network }}"
+        entryPoint: []
+      env:
+        KESTRA_LOGS: "1"
+        POSTGRES_HOST: postgres
+        POSTGRES_PORT: "5432"
+        POSTGRES_DB: "{{ envs.db }}"
+        POSTGRES_USER: "{{ envs.user }}"
+        POSTGRES_PASSWORD: "{{ envs.password }}"
+        MINIO_ENDPOINT: http://objectstorage:9000
+        MINIO_ADMIN: "{{ envs.minio_admin }}"
+        MINIO_SECRET: "{{ envs.minio_secret }}"
+
+tasks:
+  - id: load_snapshot
+    type: io.kestra.plugin.scripts.shell.Commands
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 3
+    commands:
+      - "gpu_pipeline gpu-load --date {{ (trigger.date ?? execution.startDate) | date('yyyy-MM-dd') }}"
+
+  - id: verify_snapshot
+    type: io.kestra.plugin.scripts.shell.Commands
+    runIf: "{{ outputs.load_snapshot.vars.status == 'loaded' }}"
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 3
+    commands:
+      - "gpu_pipeline gpu-verify --date {{ (trigger.date ?? execution.startDate) | date('yyyy-MM-dd') }}"
+
+  - id: transform_snapshot
+    type: io.kestra.plugin.scripts.shell.Commands
+    runIf: "{{ outputs.load_snapshot.vars.status == 'loaded' }}"
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 3
+    commands:
+      - "gpu_pipeline gpu-transform --date {{ (trigger.date ?? execution.startDate) | date('yyyy-MM-dd') }}"
+
+triggers:
+  - id: daily_0600
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 6 * * *"
+    timezone: UTC
+    recoverMissedSchedules: LAST

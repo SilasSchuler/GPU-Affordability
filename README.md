@@ -1,7 +1,7 @@
 # GPU Affordability
 DENG Module Group Project
 
-GPU prices are rising rapidly, leaving many consumers uncertain about when to buy. The final product is a forecast that helps small businesses and individuals look past the hype: a daily-updated table ranking GPUs into **Buy Now** vs. **Wait**. At the midterm the repository delivers the raw layer, the AI model release calendar and the deal staging table; the Buy/Wait ranking is the W14 deliverable.
+GPU prices keep rising, and buyers can't tell when to buy. We build a forecast for small businesses and individuals: a table, updated daily, that ranks GPUs into **Buy Now** or **Wait**. At the midterm the repository delivers the raw layer, the AI model release calendar and the deal staging table. The Buy/Wait ranking is the W14 deliverable.
 
 ## Data
 
@@ -14,7 +14,7 @@ Fields used from the GPU JSON: `title`, `brand`, `price`, `currency`, `condition
 
 ## Architecture
 
-**v0.2 — as implemented (local phase):**
+**v0.2, as implemented (local phase):**
 
 ```mermaid
 flowchart LR
@@ -23,9 +23,9 @@ flowchart LR
         EP["Epoch AI models<br/>(CSV download)"]
     end
 
-    AF["Airflow (LocalExecutor)<br/>gpu_deals_daily / epoch_models_weekly"]
+    KE["Kestra<br/>epoch_models_daily / gpu_deals_daily /<br/>gpu_deals_relink_weekly"]
 
-    subgraph raw [Raw layer — immutable]
+    subgraph raw [Raw layer, immutable]
         MINIO[("MinIO bucket 'raw'<br/>source files, dated keys")]
         PGRAW[("Postgres schema 'raw'<br/>JSONB rows + ingestion_log")]
     end
@@ -37,103 +37,84 @@ flowchart LR
     PGRAW --> STGD
     STG -- "release lookup + FK" --> STGD
 
-    GH --> AF
-    EP --> AF
-    AF --> MINIO
-    AF --> PGRAW
-
-
+    GH --> KE
+    EP --> KE
+    KE --> MINIO
+    KE --> PGRAW
 ```
 
 Changed decisions vs. the [v0.1 pitch](images/architecture_v0.1.png):
-- Local MinIO stands in for GCS (same S3 API — the cloud phase only changes the endpoint); BigQuery moves to W14.
-- Airflow orchestrates from the local phase on, as LocalExecutor (no redis/worker needed).
-- Epoch CSV comes from a stable download URL with a hash check — no scraping, no manual export.
-- Transformation starts with two justified deliverables (release calendar and deal staging table); the buy/wait ranking stays in W14.
+- Local MinIO stands in for GCS. It speaks the same S3 API, so the cloud phase only changes the endpoint. BigQuery moves to W14.
+- Kestra orchestrates the pipelines from the local phase on. Each flow task calls one CLI command from `src/`.
+- The Epoch CSV comes from a stable download URL with a hash check. We don't scrape or export it by hand.
+- Transformation starts with two deliverables, the release calendar and the deal staging table. The Buy/Wait ranking stays in W14.
 
 ## Setup
 
-Prerequisites: Docker with Compose, `uv`, and free ports `5432`, `8080`, `8085`, `9000` and `5001`. `.env` is gitignored; never commit it.
+Prerequisites: Docker with Compose, `uv`, and free ports `5432`, `5001`, `8081`, `8085` and `9000`. Git ignores `.env`; keep it out of commits.
 
 ```bash
 uv sync
 cp .env-example .env
-# Fill every empty value in .env. Required: POSTGRES_PASSWORD,
-# MINIO_SECRET, PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD, FERNET_KEY.
-# Generate FERNET_KEY with:
-python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
-docker compose up -d     # postgres, object storage, mlflow, pgadmin, airflow
+# Fill every empty value in .env. Compose refuses to start without
+# POSTGRES_PASSWORD, POSTGRES_DB, POSTGRES_USER, KESTRA_USER and KESTRA_PASSWORD.
+# Also set MINIO_SECRET, PGADMIN_DEFAULT_EMAIL and PGADMIN_DEFAULT_PASSWORD.
+docker compose up -d     # postgres, object storage, mlflow, pgadmin, kestra
 ```
 
-`init-db.sql` runs only when the Postgres volume is first created. To reset a broken environment, use `docker compose down -v` (this deletes local data) and `docker compose up -d`. Airflow creates both DAGs paused; unpause them before triggering (see [Airflow](#airflow)).
+Postgres runs `containers/postgres/init-db.sql` only when it first creates the volume. To reset a broken environment, run `docker compose down -v` (this deletes all local data), then `docker compose up -d`.
 
 ## Running the pipelines
 
-The first GPU load is a **full backfill** of the upstream archive; later runs are **incremental**, one date per daily run. Each snapshot lands as immutable bytes in MinIO (bucket `raw`) and as JSONB rows in Postgres (schema `raw`). Rerunning a date deletes and replaces only that date, so it never duplicates. Upstream 404 gaps are skipped and marked skipped in Airflow; network/HTTP failures surface and are retried by the DAGs (2 attempts, 5-minute delay). The raw layer is not cleaned — transformation is a separate step.
+The first GPU load is a **full backfill** of the upstream archive. Later runs are **incremental** and load one date each. Each snapshot lands as untouched bytes in MinIO (bucket `raw`) and as JSONB rows in Postgres (schema `raw`). Rerunning a date deletes and replaces that date only, so you never get duplicates. The CLI logs an upstream 404 as a skipped date and exits 0. Network and HTTP errors exit non-zero, and Kestra retries the task (3 attempts, 5 minutes apart). Ingestion doesn't clean the raw layer; the transformation step does.
 
-On the host (docker stack must be up):
+On the host (the docker stack must be up):
 ```bash
-uv run python -m src.ingestion.epoch_models fetch    # models CSV (skipped if unchanged)
-uv run python -m src.ingestion.gpu_deals backfill    # all history from GitHub
-uv run python -m src.ingestion.gpu_deals daily       # today's deals
+uv run python -m src.ingestion.epoch_models fetch                  # models CSV, skipped if unchanged
+uv run python -m src.ingestion.gpu_deals backfill                  # all history from GitHub
+uv run python -m src.ingestion.gpu_deals daily --date 2026-10-20   # one past day
+uv run python -m src.ingestion.gpu_deals daily                     # today's deals
+uv run python -m src.ingestion.gpu_deals verify                    # fail if today has < 1000 raw rows
 ```
-Also available: `gpu_deals seed` (loads pre-downloaded files from `data/GPU/`) and
-`docker compose --profile ingest run --rm ingestion src.ingestion.gpu_deals daily`
-(same pipeline inside docker, no local Python needed). `data/GPU/` is gitignored; use `backfill` unless you downloaded those snapshots yourself.
+
+| Command | Flags | Does |
+|---|---|---|
+| `epoch_models fetch` | `--date` (default today) | downloads the CSV and loads it if the sha256 changed |
+| `gpu_deals daily` | `--date` (default today) | loads one snapshot. Past dates log as mode `backfill`. An upstream gap logs a warning and exits 0. |
+| `gpu_deals verify` | `--date`, `--min-rows` (default 1000, env `MIN_EXPECTED_ROWS`) | fails with `TooFewRowsError` if the day has fewer raw rows |
+| `gpu_deals backfill` | `--start` (default 2025-09-19), `--end` (default today), `--force` | loads every missing date in the range; `--force` reloads dates already loaded |
+| `gpu_deals seed` | `--limit` | loads pre-downloaded files from `data/GPU/` |
+
+Each command also runs inside docker, without local Python:
+`docker compose --profile ingest run --rm ingestion src.ingestion.gpu_deals daily`.
+Git ignores `data/GPU/`, so use `backfill` unless you downloaded those snapshots yourself.
 
 ## Transformation
 
-**Why these transformations:** the Buy/Wait use case needs two things the raw JSONB cannot provide directly: a clean release calendar as a model feature, and a typed per-listing table with price-per-GB and the number of days since the latest model release.
+The Buy/Wait use case needs two things the raw JSONB can't give it: a clean release calendar as a model feature, and a typed per-listing table with price per GB and the days since the latest model release.
 
-Run the CLI in this order: `model_releases`, then `gpu_deals`. The GPU transform also builds the release calendar first, so the Airflow task is safe if `epoch_models_weekly` has not run yet.
+Run `model_releases` first, then `gpu_deals`. `gpu_deals build` rebuilds the release calendar itself, so you can skip the first step, but `raw.epoch_models` needs at least one load.
 
-   1. `staging.model_releases` (id, model_name, organization, release_date >= 2020, built_at), derived from `raw.epoch_models`. Casts the date, drops unparseable dates, deduplicates on (model_name, release_date), and upserts so IDs stay stable.
-   2. `staging.gpu_deals` (typed listing fields, price_per_gb, scraped_at, model_release_id, days_since_llm_release), derived from `raw.gpu_deals`. Selects and renames fields, casts values, collapses exact duplicate listings, computes price per GB, and links each deal to the latest release on or before its snapshot date. The CLI `build` rebuilds all days; the daily DAG replaces one day.
+1. `staging.model_releases` (id, model_name, organization, release_date >= 2020, built_at) comes from `raw.epoch_models`. The build casts the date, drops dates it can't parse, deduplicates on (model_name, release_date) and upserts, so IDs stay stable.
+2. `staging.gpu_deals` (typed listing fields, price_per_gb, scraped_at, model_release_id, days_since_llm_release) comes from `raw.gpu_deals`. The build selects and renames fields, casts values, collapses exact duplicate listings, computes price per GB and links each deal to the latest release on or before its snapshot date. `build` rebuilds all days; `build --date` replaces one day.
 
 **Grain:** one row per (`model_name`, `release_date`) in `staging.model_releases`; one row per distinct listing per snapshot date in `staging.gpu_deals`.
 
 ```bash
 uv run python -m src.transformation.model_releases build
+uv run python -m src.transformation.gpu_deals build                    # full history
+uv run python -m src.transformation.gpu_deals build --date 2026-10-20  # one day
 ```
 
-```bash
-uv run python -m src.transformation.gpu_deals build
-```
+`gpu_deals build` raises `TooFewRowsError` when fewer than `--min-rows` rows come out (default 1000, env `MIN_EXPECTED_ROWS`; `--min-rows 0` turns the check off). It checks before the commit, so a failed build leaves `staging.gpu_deals` as it was.
 
-## Airflow
+## Kestra
 
-UI at http://localhost:8080 (login `airflow` / `airflow`). Both DAGs are **paused at creation**, so unpause them once before scheduled runs or manual triggers:
-
-```bash
-docker compose exec airflow-scheduler airflow dags unpause epoch_models_weekly
-docker compose exec airflow-scheduler airflow dags unpause gpu_deals_daily
-```
-
-| DAG | Schedule | Does |
-|---|---|---|
-| `epoch_models_weekly` | Mon 07:00 UTC | hash-checked CSV refresh + release calendar rebuild |
-| `gpu_deals_daily` | daily 06:00 UTC | one snapshot per logical date + row-count check + release-calendar rebuild + `staging.gpu_deals` transform |
-
-```bash
-# Ad-hoc run
-docker compose exec airflow-scheduler airflow dags trigger epoch_models_weekly
-docker compose exec airflow-scheduler airflow dags trigger gpu_deals_daily
-
-# Full history (the Verify counts below assume this)
-docker compose exec airflow-scheduler airflow backfill create \
-  --dag-id gpu_deals_daily --from-date 2025-09-19 --to-date "$(date +%F)" \
-  --max-active-runs 4
-
-# Small backfill example
-docker compose exec airflow-scheduler airflow backfill create \
-  --dag-id gpu_deals_daily --from-date 2026-10-12 --to-date 2026-10-13
-```
-
-The archive lags the current date by a few days; missing dates are skipped, not failed.
+*Add once flows are complete*
 
 ## Verify
 
-Run against the compose Postgres (use the user/database from your `.env`):
+Run these queries against the compose Postgres (use the user and database from your `.env`):
 
 ```bash
 docker compose exec -T postgres psql -U sharedUser -d gpu <<'SQL'
@@ -145,25 +126,23 @@ SQL
 ```
 
 Expected after the **full backfill**:
-- `raw.gpu_deals`: about 1.3M rows across 350+ available dates (the upstream archive currently has 352 dates; some gaps).
+- `raw.gpu_deals`: about 1.3M rows across 350+ dates (the upstream archive has 352 dates at time of writing, with gaps).
 - `staging.model_releases`: at least 628 rows (628 from the bundled CSV, 629 from the live CSV at time of writing).
 - `raw.ingestion_log`: `success` rows for both sources.
-- `staging.gpu_deals`: both counts > 0; equal when every deal has a prior release (true for the 2025+ data).
+- `staging.gpu_deals`: both counts > 0. They match when every deal has a prior release, which holds for the 2025+ data.
 
-A single daily run intentionally loads **one** date (~3.8k raw rows), so the 1.3M-row check only applies after the full backfill. Optional object-store check:
+A single daily run loads **one** date (~3.8k raw rows), so the 1.3M-row check applies only after the full backfill. To check the object store from the host:
 
 ```bash
-docker compose exec airflow-scheduler python -c \
-  "from src.ingestion.storage import get_client; print(sorted(b['Name'] for b in get_client().list_buckets()['Buckets']))"
+uv run python -c "from src.ingestion.storage import get_client; print(sorted(b['Name'] for b in get_client().list_buckets()['Buckets']))"
 ```
 
 ## Known limitations
 
-- Epoch AI publishes only the current CSV, not historical versions. Backfilling `epoch_models_weekly` for an old logical date reloads today's CSV; use it only for the latest snapshot. The GPU archive is dated and can be backfilled.
-- For today, `gpu_deals daily` falls back to `current-gpu-deals.json` until the dated archive file exists; a later backfill of that date can replace the snapshot with the archive version.
-- `staging.gpu_deals` collapses exact duplicate listings within a snapshot (e.g. 3,805 raw rows → 2,349 staging rows on 2026-10-25). Bundle listings ("set of two cards") can skew `price_per_gb` because `vram_gb` is per card.
-- Local Compose defaults (Airflow `airflow/airflow`, hardcoded Airflow metadata DB credentials) are for development only; cloud infrastructure, Terraform and secret management are W14 work.
-
+- Epoch AI publishes only the current CSV, with no history. `epoch_models fetch --date` with an old date downloads today's CSV and stores it under that date, so use it for the latest snapshot only. The GPU archive is dated, and you can backfill it.
+- For today, `gpu_deals daily` falls back to `current-gpu-deals.json` until the dated archive file exists. A later `daily --date` or `backfill --force` for that date replaces the snapshot with the archive version.
+- `staging.gpu_deals` collapses exact duplicate listings within a snapshot (on 2026-10-25, 3,805 raw rows became 2,349 staging rows). Bundle listings ("set of two cards") skew `price_per_gb`, because `vram_gb` counts one card.
+- The Compose setup targets local development. Cloud infrastructure, Terraform and secret management are W14 work.
 
 ## Servers
 
@@ -171,15 +150,15 @@ docker compose exec airflow-scheduler python -c \
 |---|---|---|
 | Postgres | postgres:5432 | localhost:5432 |
 | MinIO | objectstorage:9000 | localhost:9000 |
-| pgAdmin | — | localhost:8085 |
-| Airflow UI | — | localhost:8080 (login airflow/airflow) |
-| MLflow | — | localhost:5001 |
+| pgAdmin | pgadmin:80 | localhost:8085 (`PGADMIN_PORT`) |
+| Kestra UI | kestra:8080 | localhost:8081 (`KESTRA_PORT`, login from `.env`) |
+| MLflow | mlflow:5001 | localhost:5001 |
 
 pgAdmin connection: host `postgres`, port `5432`, user `sharedUser`, password from `.env`.
 
 ## Attribution
 
-Epoch AI model data is licensed CC-BY — cite *Epoch AI, 'Data on AI Models', epoch.ai/data/ai-models*.
+Epoch AI licenses the model data as CC-BY. Cite *Epoch AI, 'Data on AI Models', epoch.ai/data/ai-models*.
 
 ## Initial Plan
 

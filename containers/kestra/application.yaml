@@ -1,0 +1,31 @@
+kestra:
+  url: http://localhost:${KESTRA_PORT}/
+  server:
+    basic-auth:
+      username: ${KESTRA_USER}        # it must be a valid email address
+      password: ${KESTRA_PASSWORD}    # it must be at least 8 characters long with uppercase letter and a number
+  repository:
+    type: postgres
+  storage:
+    type: local
+    local:
+      base-path: "/app/storage"
+  queue:
+    type: postgres
+  tutorialFlows:
+    enabled: false
+  tasks:
+    tmp-dir:
+      path: /tmp/kestra-wd/tmp
+  plugins:
+    configurations:
+      - type: io.kestra.plugin.scripts.runner.docker.Docker
+        values:
+          volume-enabled: true
+
+micronaut:
+  io:
+    watch:
+      enabled: true
+      paths:
+        - /flows
