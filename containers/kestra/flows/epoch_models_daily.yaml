@@ -1,0 +1,57 @@
+id: epoch_models_daily
+namespace: gpu
+description: Refresh the Epoch AI models CSV when changed; rebuild the release calendar.
+
+labels:
+  stage: ingestion
+  source: epoch_models
+
+concurrency:
+  limit: 1
+  behavior: QUEUE
+
+pluginDefaults:
+  - type: io.kestra.plugin.scripts.shell.Commands
+    values:
+      containerImage: gpu-ingestion:local
+      taskRunner:
+        type: io.kestra.plugin.scripts.runner.docker.Docker
+        pullPolicy: NEVER
+        networkMode: "{{ envs.network }}"
+        entryPoint: []
+      env:
+        POSTGRES_HOST: postgres
+        POSTGRES_PORT: "5432"
+        POSTGRES_DB: "{{ envs.db }}"
+        POSTGRES_USER: "{{ envs.user }}"
+        POSTGRES_PASSWORD: "{{ envs.password }}"
+        MINIO_ENDPOINT: http://objectstorage:9000
+        MINIO_ADMIN: "{{ envs.minio_admin }}"
+        MINIO_SECRET: "{{ envs.minio_secret }}"
+
+# Kestra starts the container in its own task folder, so --directory points uv at the project in /app.
+tasks:
+  - id: fetch_and_load
+    type: io.kestra.plugin.scripts.shell.Commands
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 2
+    commands:
+      - "uv run --directory /app --no-sync python -m src.ingestion.epoch_models fetch --date {{ (trigger.date ?? execution.startDate) | date('yyyy-MM-dd') }}"
+
+  - id: build_model_releases
+    type: io.kestra.plugin.scripts.shell.Commands
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 2
+    commands:
+      - uv run --directory /app --no-sync python -m src.transformation.model_releases build
+
+triggers:
+  - id: daily
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 5 * * *"
+    timezone: UTC
+    recoverMissedSchedules: LAST

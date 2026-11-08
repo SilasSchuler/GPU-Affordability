@@ -29,6 +29,10 @@ GPU_REPO_RAW = "https://raw.githubusercontent.com/HardwareDealsCo/gpu-deals/main
 # Epoch AI publishes direct CSV downloads (CC-BY, see README for citation).
 EPOCH_CSV_URL = "https://epoch.ai/data/notable_ai_models.csv"
 
+# Default for every --min-rows check (raw verify, day transform, full relink).
+# A normal day has ~3.8k raw rows; below 1000 points to a broken upstream file.
+MIN_EXPECTED_ROWS = int(os.getenv("MIN_EXPECTED_ROWS", "1000"))
+
 
 @dataclass(frozen=True)
 class Settings:

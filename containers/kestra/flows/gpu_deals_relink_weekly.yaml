@@ -1,0 +1,50 @@
+id: gpu_deals_relink_weekly
+namespace: gpu
+description: Rebuild staging.gpu_deals from raw so all deals match the current release calendar.
+
+labels:
+  stage: transformation
+  source: gpu_deals
+
+concurrency:
+  limit: 1
+  behavior: QUEUE
+
+pluginDefaults:
+  - type: io.kestra.plugin.scripts.shell.Commands
+    values:
+      containerImage: gpu-ingestion:local
+      taskRunner:
+        type: io.kestra.plugin.scripts.runner.docker.Docker
+        pullPolicy: NEVER
+        networkMode: "{{ envs.network }}"
+        entryPoint: []
+      env:
+        POSTGRES_HOST: postgres
+        POSTGRES_PORT: "5432"
+        POSTGRES_DB: "{{ envs.db }}"
+        POSTGRES_USER: "{{ envs.user }}"
+        POSTGRES_PASSWORD: "{{ envs.password }}"
+        MINIO_ENDPOINT: http://objectstorage:9000
+        MINIO_ADMIN: "{{ envs.minio_admin }}"
+        MINIO_SECRET: "{{ envs.minio_secret }}"
+
+# Kestra starts the container in its own task folder, so --directory points uv at the project in /app.
+# `build` without --date rebuilds every snapshot date.
+tasks:
+  - id: rebuild_history
+    type: io.kestra.plugin.scripts.shell.Commands
+    timeout: PT1H
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 2
+    commands:
+      - uv run --directory /app --no-sync python -m src.transformation.gpu_deals build
+
+triggers:
+  - id: sunday_0800
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 8 * * 0"
+    timezone: UTC
+    recoverMissedSchedules: LAST

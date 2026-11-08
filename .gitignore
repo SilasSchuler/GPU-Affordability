@@ -1,5 +1,6 @@
 # Local secrets
 .env
+.claude
 
 # Docker volume data (local runtime state — never commit)
 postgres_data/
@@ -10,6 +11,7 @@ logs/
 # `python -m src.ingestion.gpu_deals backfill`; only the manually
 # compiled Epoch CSV is versioned for reproducibility.
 data/GPU/
+CLAUDE.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -255,3 +257,6 @@ bundles/
 vendor/pkg/
 pyenv
 Vagrantfile
+# Claude Code personal files
+.claude/settings.local.json
+CLAUDE.local.md
