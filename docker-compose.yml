@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - ./postgres_data:/var/lib/postgresql
+      - ./data/postgres_data:/var/lib/postgresql
       - ./containers/postgres/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
@@ -33,7 +33,7 @@ services:
       - MINIO_ROOT_USER=${MINIO_ADMIN}
       - MINIO_ROOT_PASSWORD=${MINIO_SECRET}
     volumes:
-      - ./s3_data:/data
+      - ./data/s3_data:/data
     networks:
       - development
 
@@ -106,7 +106,9 @@ services:
       - MINIO_ADMIN=${MINIO_ADMIN}
       - MINIO_SECRET=${MINIO_SECRET}
     volumes:
-      - ./data:/app/data:ro # seed mode reads the downloaded source files
+      # Source files only: mounting all of ./data would expose the postgres and s3 volumes.
+      - ./data/GPU:/app/data/GPU:ro # gpu_deals seed
+      - ./data/epoch_ai_models_release:/app/data/epoch_ai_models_release:ro # epoch_models snapshot
     networks:
       - development
 
@@ -155,6 +157,7 @@ services:
       DATASOURCES_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       KESTRA_LOGIN_USER: ${KESTRA_USER:?Set KESTRA_USER in .env}
       KESTRA_LOGIN_PASSWORD: ${KESTRA_PASSWORD:?Set KESTRA_PASSWORD in .env}
+      KESTRA_PORT: ${KESTRA_PORT:-8081}
       # ENV_KESTRA_DATA_DIR: ${KESTRA_DATA_DIR:?Set KESTRA_DATA_DIR in .env}
       ENV_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
       ENV_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
@@ -164,7 +167,8 @@ services:
       ENV_MINIO_SECRET: ${MINIO_SECRET}
     volumes:
       - kestra_files:/app/storage
-      - ./application.yaml:/etc/kestra/application.yaml:ro
+      - ./containers/kestra/application.yaml:/etc/kestra/application.yaml:ro
+      - ./containers/kestra/flows:/flows:ro
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:

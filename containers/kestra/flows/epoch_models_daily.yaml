@@ -20,7 +20,6 @@ pluginDefaults:
         networkMode: "{{ envs.network }}"
         entryPoint: []
       env:
-        KESTRA_LOGS: "1"
         POSTGRES_HOST: postgres
         POSTGRES_PORT: "5432"
         POSTGRES_DB: "{{ envs.db }}"
@@ -30,24 +29,25 @@ pluginDefaults:
         MINIO_ADMIN: "{{ envs.minio_admin }}"
         MINIO_SECRET: "{{ envs.minio_secret }}"
 
+# Kestra starts the container in its own task folder, so --directory points uv at the project in /app.
 tasks:
   - id: fetch_and_load
     type: io.kestra.plugin.scripts.shell.Commands
     retry:
       type: constant
       interval: PT5M
-      maxAttempt: 3
+      maxAttempt: 2
     commands:
-      - "gpu_pipeline epoch-fetch --date {{ (trigger.date ?? execution.startDate) | date('yyyy-MM-dd') }}"
+      - "uv run --directory /app --no-sync python -m src.ingestion.epoch_models fetch --date {{ (trigger.date ?? execution.startDate) | date('yyyy-MM-dd') }}"
 
   - id: build_model_releases
     type: io.kestra.plugin.scripts.shell.Commands
     retry:
       type: constant
       interval: PT5M
-      maxAttempt: 3
+      maxAttempt: 2
     commands:
-      - gpu_pipeline releases-build
+      - uv run --directory /app --no-sync python -m src.transformation.model_releases build
 
 triggers:
   - id: daily

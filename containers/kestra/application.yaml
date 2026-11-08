@@ -2,8 +2,8 @@ kestra:
   url: http://localhost:${KESTRA_PORT}/
   server:
     basic-auth:
-      username: ${KESTRA_USER}        # it must be a valid email address
-      password: ${KESTRA_PASSWORD}    # it must be at least 8 characters long with uppercase letter and a number
+      username: ${KESTRA_LOGIN_USER}        # it must be a valid email address
+      password: ${KESTRA_LOGIN_PASSWORD}    # it must be at least 8 characters long with uppercase letter and a number
   repository:
     type: postgres
   storage:
@@ -23,9 +23,17 @@ kestra:
         values:
           volume-enabled: true
 
+# Top-level keys: Kestra ignores these when nested under `kestra:`.
 micronaut:
   io:
     watch:
       enabled: true
       paths:
         - /flows
+
+datasources:
+  postgres:
+    url: jdbc:postgresql://postgres:5432/kestra
+    driverClassName: org.postgresql.Driver
+    username: ${DATASOURCES_POSTGRES_USERNAME}
+    password: ${DATASOURCES_POSTGRES_PASSWORD}

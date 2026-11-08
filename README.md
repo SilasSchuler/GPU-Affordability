@@ -110,7 +110,33 @@ uv run python -m src.transformation.gpu_deals build --date 2026-10-20  # one day
 
 ## Kestra
 
-*Add once flows are complete*
+Kestra runs the pipelines on a schedule. Open the UI at [http://localhost:8081](http://localhost:8081) (`KESTRA_PORT`) and log in with `KESTRA_USER` and `KESTRA_PASSWORD` from `.env`. Kestra reads the flows from `containers/kestra/flows/` into the namespace `gpu` and picks up file edits while it runs.
+
+Each task starts a container from the `gpu-ingestion:local` image. Kestra won't pull it, so build it once before the first run:
+
+```bash
+docker compose --profile ingest build ingestion
+```
+
+| Flow | Schedule (UTC) | Does |
+|---|---|---|
+| `epoch_models_daily` | daily, 05:00 | fetches the Epoch CSV and rebuilds `staging.model_releases` |
+| `gpu_deals_daily` | daily, 06:00 | loads the day's snapshot, checks it has at least 1,000 rows, and transforms that day into `staging.gpu_deals` |
+| `gpu_deals_relink_weekly` | Sunday, 08:00 | rebuilds all of `staging.gpu_deals`, so older deals link to releases Epoch added after their load |
+
+`epoch_models_daily` must finish before `gpu_deals_daily` starts, because the deal transform links each listing to a release in the calendar. The schedules leave one hour between the two. On a fresh setup, execute `epoch_models_daily` by hand first, then `gpu_deals_daily` with `backfill` on. Full rebuilds of `staging.gpu_deals` have a one-hour timeout. Each flow queues a second execution until the first one ends. If Kestra was down at a scheduled time, it runs the last missed execution when it starts again.
+
+To run `gpu_deals_daily` by hand, open the flow in the UI and click **Execute**. The inputs pick the mode:
+
+| Inputs | Loads | Transforms |
+|---|---|---|
+| none | today | that day, after the 1,000-row check |
+| `date` | that day | that day, after the 1,000-row check |
+| `date` + `end_date` | every missing date in the span, inclusive | full rebuild |
+| `backfill` | every missing date since 2025-09-19; ignores `date` and `end_date` | full rebuild |
+| `force` | with a span or `backfill`: also reloads dates already in `raw.gpu_deals` | full rebuild |
+
+A span or backfill skips upstream gaps and has no per-day check; the `--min-rows` check of the full rebuild guards staging instead. A single-day run replaces its date anyway, so it ignores `force`.
 
 ## Verify
 

@@ -1,10 +1,41 @@
 id: gpu_deals_daily
 namespace: gpu
-description: Ingest the daily GPU deals snapshot into the raw layer, verify it, transform into staging.
+description: |
+  Ingest GPU deal snapshots into the raw layer and transform them into staging.
+  - Neither date set: load the schedule date (today for a manual run), verify it, transform it.
+  - `date` only: the same for that one day.
+  - `date` + `end_date`: load every missing date in the span, then rebuild staging.gpu_deals.
+  - `backfill`: load every missing date since 2025-09-19, then rebuild staging.gpu_deals.
+  - `force`: with a timespan or backfill, reload dates that are already loaded too.
 
 labels:
   stage: ingestion
   source: gpu_deals
+
+inputs:
+  - id: date
+    type: DATE
+    required: false
+    description: Snapshot date, or the first day of a timespan. Empty means the schedule date, or today for a manual run.
+
+  - id: end_date
+    type: DATE
+    required: false
+    description: Last day of a timespan, inclusive. Empty loads only `date`.
+
+  - id: backfill
+    type: BOOL
+    defaults: false
+    description: Load the entire upstream history. Ignores `date` and `end_date`.
+
+  - id: force
+    type: BOOL
+    defaults: false
+    description: Reload dates already in raw.gpu_deals during a timespan or backfill. A single-day run always reloads its date.
+
+variables:
+  date: "{{ inputs.date ?? ((trigger.date ?? execution.startDate) | date('yyyy-MM-dd')) }}"
+  mode: "{{ inputs.backfill ? 'backfill' : ((inputs.end_date ?? '') == '' ? 'daily' : 'range') }}"
 
 concurrency:
   limit: 1
@@ -20,7 +51,6 @@ pluginDefaults:
         networkMode: "{{ envs.network }}"
         entryPoint: []
       env:
-        KESTRA_LOGS: "1"
         POSTGRES_HOST: postgres
         POSTGRES_PORT: "5432"
         POSTGRES_DB: "{{ envs.db }}"
@@ -30,35 +60,83 @@ pluginDefaults:
         MINIO_ADMIN: "{{ envs.minio_admin }}"
         MINIO_SECRET: "{{ envs.minio_secret }}"
 
+# Kestra starts the container in its own task folder, so --directory points uv at the project in /app.
+# `backfill` skips dates already in raw.gpu_deals, so a retry resumes where the failed attempt stopped.
+# With `force` on, a retry starts over and reloads every date in the span.
 tasks:
-  - id: load_snapshot
-    type: io.kestra.plugin.scripts.shell.Commands
-    retry:
-      type: constant
-      interval: PT5M
-      maxAttempt: 3
-    commands:
-      - "gpu_pipeline gpu-load --date {{ (trigger.date ?? execution.startDate) | date('yyyy-MM-dd') }}"
+  - id: run_mode
+    type: io.kestra.plugin.core.flow.Switch
+    value: "{{ render(vars.mode) }}"
+    cases:
+      daily:
+        - id: load_snapshot
+          type: io.kestra.plugin.scripts.shell.Commands
+          retry:
+            type: constant
+            interval: PT5M
+            maxAttempt: 2
+          commands:
+            - "uv run --directory /app --no-sync python -m src.ingestion.gpu_deals daily --date {{ render(vars.date) }}"
 
-  - id: verify_snapshot
-    type: io.kestra.plugin.scripts.shell.Commands
-    runIf: "{{ outputs.load_snapshot.vars.status == 'loaded' }}"
-    retry:
-      type: constant
-      interval: PT5M
-      maxAttempt: 3
-    commands:
-      - "gpu_pipeline gpu-verify --date {{ (trigger.date ?? execution.startDate) | date('yyyy-MM-dd') }}"
+        # `daily` exits 0 on an upstream gap; this task then fails, so the transform never runs on a missing day.
+        # A retry can't change the row count which is why no retries for this step
+        - id: verify_snapshot
+          type: io.kestra.plugin.scripts.shell.Commands
+          retry:
+            type: constant
+          commands:
+            - "uv run --directory /app --no-sync python -m src.ingestion.gpu_deals verify --date {{ render(vars.date) }}"
 
-  - id: transform_snapshot
-    type: io.kestra.plugin.scripts.shell.Commands
-    runIf: "{{ outputs.load_snapshot.vars.status == 'loaded' }}"
-    retry:
-      type: constant
-      interval: PT5M
-      maxAttempt: 3
-    commands:
-      - "gpu_pipeline gpu-transform --date {{ (trigger.date ?? execution.startDate) | date('yyyy-MM-dd') }}"
+        - id: transform_snapshot
+          type: io.kestra.plugin.scripts.shell.Commands
+          retry:
+            type: constant
+            interval: PT5M
+            maxAttempt: 2
+          commands:
+            - "uv run --directory /app --no-sync python -m src.transformation.gpu_deals build --date {{ render(vars.date) }}"
+
+      # A span or full backfill skips upstream gaps instead of failing, so there is no per-day verify.
+      # The full rebuild's --min-rows check guards staging instead.
+      range:
+        - id: load_range
+          type: io.kestra.plugin.scripts.shell.Commands
+          retry:
+            type: constant
+            interval: PT5M
+            maxAttempt: 2
+          commands:
+            - "uv run --directory /app --no-sync python -m src.ingestion.gpu_deals backfill --start {{ render(vars.date) }} --end {{ inputs.end_date }}{{ inputs.force ? ' --force' : '' }}"
+
+        - id: transform_range
+          type: io.kestra.plugin.scripts.shell.Commands
+          timeout: PT1H
+          retry:
+            type: constant
+            interval: PT5M
+            maxAttempt: 3
+          commands:
+            - uv run --directory /app --no-sync python -m src.transformation.gpu_deals build
+
+      backfill:
+        - id: load_history
+          type: io.kestra.plugin.scripts.shell.Commands
+          retry:
+            type: constant
+            interval: PT5M
+            maxAttempt: 2
+          commands:
+            - "uv run --directory /app --no-sync python -m src.ingestion.gpu_deals backfill{{ inputs.force ? ' --force' : '' }}"
+
+        - id: transform_history
+          type: io.kestra.plugin.scripts.shell.Commands
+          timeout: PT1H
+          retry:
+            type: constant
+            interval: PT5M
+            maxAttempt: 2
+          commands:
+            - uv run --directory /app --no-sync python -m src.transformation.gpu_deals build
 
 triggers:
   - id: daily_0600
