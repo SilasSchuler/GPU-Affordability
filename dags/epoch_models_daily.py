@@ -1,4 +1,4 @@
-"""Weekly Epoch AI models refresh + release calendar rebuild.
+"""Daily Epoch AI models refresh + release calendar rebuild.
 
 The CSV is semi-static: download it, load only when the sha256 changed
 (logged as `unchanged` otherwise), then rebuild staging.model_releases
@@ -16,16 +16,16 @@ from src.transformation.model_releases import build
 
 
 @dag(
-    dag_id="epoch_models_weekly",
+    dag_id="epoch_models_daily",
     description="Refresh the Epoch AI models CSV when changed; rebuild the release calendar.",
-    schedule="0 7 * * 1",
+    schedule="0 5 * * *",
     start_date=datetime(2026, 1, 5),
     catchup=False,
     max_active_runs=1,
     tags=["ingestion", "epoch_models", "transformation"],
     default_args={"retries": 2, "retry_delay": timedelta(minutes=5)},
 )
-def epoch_models_weekly():
+def epoch_models_daily():
     @task
     def fetch_and_load() -> None:
         # Manual runs (Airflow 3) have no logical date — use today then.
@@ -41,4 +41,4 @@ def epoch_models_weekly():
     fetch_and_load() >> build_model_releases()
 
 
-epoch_models_weekly()
+epoch_models_daily()
