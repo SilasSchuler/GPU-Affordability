@@ -148,6 +148,35 @@ Test (2026-08-07 to 2026-10-08) for the selected logistic regression: PR-AUC 0.3
 
 In MLflow (http://localhost:5001), experiment `gpu-buy-wait` holds one parent run `train-compare` per training, one child run per candidate, and `report/` artifacts (`model_comparison.csv`, `summary.json`, `feature_importance.csv`). The registered model version carries the decision threshold and score type as tags.
 
+## Buy/Wait ranking (serving)
+
+`mart.gpu_buy_wait` is the final data product: the daily table that tells a buyer, per GPU type, **Buy Now** or **Wait**.
+
+**Grain:** one row per (`chipset`, `condition_group`, `snapshot_date`).
+
+| Column | Meaning |
+|---|---|
+| `advice` | `Buy Now` or `Wait` (Wait score ≥ the threshold tuned in training) |
+| `wait_score` | model score, higher = price more likely to drop ≥ 5 % within ~14 days |
+| `rank_in_day` | 1 = strongest Buy Now signal of that day |
+| `median_price`, `price_change_7d`, `vram_gb`, `price_per_gb` | context for the buyer |
+| `features_complete` | false when 7/14/30-day price history is missing (upstream archive gaps); treat that advice as low confidence |
+| `model_name`, `model_version` | which MLflow `champion` produced the row |
+
+`src/training/predict.py` loads `models:/gpu-buy-wait@champion`, builds the same past-only features as training and replaces the rows of the scored date (rerun-safe). It refuses to score if the champion was trained on a different feature list.
+
+```bash
+uv run python -m src.training.predict                    # latest date in staging.gpu_daily_prices
+uv run python -m src.training.predict --date 2026-10-21  # rescore one day
+```
+
+```sql
+SELECT rank_in_day, chipset, condition_group, advice, wait_score, median_price
+FROM mart.gpu_buy_wait
+WHERE snapshot_date = (SELECT max(snapshot_date) FROM mart.gpu_buy_wait)
+ORDER BY rank_in_day;
+```
+
 ## Kestra
 
 Kestra runs the pipelines on a schedule. Open the UI at [http://localhost:8081](http://localhost:8081) (`KESTRA_PORT`) and log in with `KESTRA_USER` and `KESTRA_PASSWORD` from `.env`. Kestra reads the flows from `containers/kestra/flows/` into the namespace `gpu` and picks up file edits while it runs.
@@ -164,6 +193,7 @@ docker compose --profile ingest build ingestion
 | `gpu_deals_daily` | daily, 06:00 | loads the day's snapshot, checks it has at least 1,000 rows, and transforms that day into `staging.gpu_deals` |
 | `gpu_deals_relink_weekly` | Sunday, 08:00 | rebuilds all of `staging.gpu_deals`, so older deals link to releases Epoch added after their load |
 | `training_weekly` | Monday, 08:00 | rebuilds `staging.gpu_daily_prices`, trains and compares the models, registers the best in MLflow (`champion` only if it passes the quality gate) |
+| `buy_wait_daily` | daily, 07:00 | rebuilds `staging.gpu_daily_prices`, scores the day with the `champion` model and replaces its rows in `mart.gpu_buy_wait` |
 
 `epoch_models_daily` must finish before `gpu_deals_daily` starts, because the deal transform links each listing to a release in the calendar. The schedules leave one hour between the two. On a fresh setup, execute `epoch_models_daily` by hand first, then `gpu_deals_daily` with `backfill` on. Full rebuilds of `staging.gpu_deals` have a one-hour timeout. Each flow queues a second execution until the first one ends. If Kestra was down at a scheduled time, it runs the last missed execution when it starts again.
 
@@ -210,6 +240,7 @@ uv run python -c "from src.ingestion.storage import get_client; print(sorted(b['
 - For today, `gpu_deals daily` falls back to `current-gpu-deals.json` until the dated archive file exists. A later `daily --date` or `backfill --force` for that date replaces the snapshot with the archive version.
 - `staging.gpu_deals` collapses exact duplicate listings within a snapshot (on 2026-10-25, 3,805 raw rows became 2,349 staging rows). Bundle listings ("set of two cards") skew `price_per_gb`, because `vram_gb` counts one card.
 - The Buy/Wait label needs ~16 future days, so the newest 16 days are never in training; the model also only has ~14 months of history, so seasonal effects (e.g. Black Friday) appear at most once.
+- The upstream archive has no files from 2026-10-22 to 2026-11-19. Days right after such a gap are scored without 7/14/30-day price history (`features_complete = false`), so their advice is weaker. GPU types with fewer than 45 observed days aren't scored at all.
 - eBay medians are noisy for rare GPUs; series with fewer than 45 observed days are left out of training.
 - MLflow gives clients direct MinIO links when they download models. From the host, `objectstorage:9000` doesn't resolve, so set `MLFLOW_ENABLE_PROXY_MULTIPART_DOWNLOAD=false` (in `.env-example`) to download through the MLflow server instead.
 - The Compose setup targets local development. Cloud infrastructure, Terraform and secret management are W14 work.

@@ -1,0 +1,69 @@
+id: buy_wait_daily
+namespace: gpu
+description: |
+  Score the champion Buy/Wait model and write the daily ranking to mart.gpu_buy_wait.
+  Runs one hour after gpu_deals_daily, so the day's deals are in staging.
+  - `date` empty: the schedule date (today for a manual run).
+  - `date` set: rescore that day (replaces its rows).
+
+labels:
+  stage: serving
+
+inputs:
+  - id: date
+    type: DATE
+    required: false
+    description: Snapshot date to score. Empty means the schedule date, or today for a manual run.
+
+variables:
+  date: "{{ inputs.date ?? ((trigger.date ?? execution.startDate) | date('yyyy-MM-dd')) }}"
+
+concurrency:
+  limit: 1
+  behavior: QUEUE
+
+pluginDefaults:
+  - type: io.kestra.plugin.scripts.shell.Commands
+    values:
+      containerImage: gpu-ingestion:local
+      taskRunner:
+        type: io.kestra.plugin.scripts.runner.docker.Docker
+        pullPolicy: NEVER
+        networkMode: "{{ envs.network }}"
+        entryPoint: []
+      env:
+        POSTGRES_HOST: postgres
+        POSTGRES_PORT: "5432"
+        POSTGRES_DB: "{{ envs.db }}"
+        POSTGRES_USER: "{{ envs.user }}"
+        POSTGRES_PASSWORD: "{{ envs.password }}"
+        MLFLOW_TRACKING_URI: http://mlflow:5001
+        GIT_PYTHON_REFRESH: quiet
+
+# Kestra starts the container in its own task folder, so --directory points uv at the project in /app.
+# A day without deals (upstream gap) makes `score` fail, so no stale ranking is written for it.
+tasks:
+  - id: build_daily_prices
+    type: io.kestra.plugin.scripts.shell.Commands
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 2
+    commands:
+      - uv run --directory /app --no-sync python -m src.transformation.gpu_daily_prices build
+
+  - id: score
+    type: io.kestra.plugin.scripts.shell.Commands
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 2
+    commands:
+      - "uv run --directory /app --no-sync python -m src.training.predict --date {{ render(vars.date) }}"
+
+triggers:
+  - id: daily_0700
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 7 * * *"
+    timezone: UTC
+    recoverMissedSchedules: LAST
