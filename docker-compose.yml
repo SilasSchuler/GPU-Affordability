@@ -138,6 +138,7 @@ services:
       - MINIO_ENDPOINT=http://objectstorage:9000
       - MINIO_ADMIN=${MINIO_ADMIN}
       - MINIO_SECRET=${MINIO_SECRET}
+      - MLFLOW_TRACKING_URI=http://mlflow:5001 # src.training.train
     volumes:
       - ./data:/app/data:ro # seed mode reads the downloaded source files
     networks:
