@@ -70,6 +70,7 @@ services:
       mlflow server --host 0.0.0.0 --port 5001
       --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow
       --artifacts-destination s3://artifacts
+      --allowed-hosts localhost,localhost:5001,127.0.0.1:5001,mlflow,mlflow:5001
     ports:
       - 127.0.0.1:5001:5001 # 5000 (mlflow default port) is taken by airplay on macos
     depends_on:
@@ -106,6 +107,7 @@ services:
       - MINIO_ADMIN=${MINIO_ADMIN}
       - MINIO_SECRET=${MINIO_SECRET}
       - MLFLOW_TRACKING_URI=http://mlflow:5001 # src.training.train
+      - GIT_PYTHON_REFRESH=quiet
     volumes:
       # Source files only: mounting all of ./data would expose the postgres and s3 volumes.
       - ./data/GPU:/app/data/GPU:ro # gpu_deals seed

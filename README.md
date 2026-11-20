@@ -108,6 +108,46 @@ uv run python -m src.transformation.gpu_deals build --date 2026-10-20  # one day
 
 `gpu_deals build` raises `TooFewRowsError` when fewer than `--min-rows` rows come out (default 1000, env `MIN_EXPECTED_ROWS`; `--min-rows 0` turns the check off). It checks before the commit, so a failed build leaves `staging.gpu_deals` as it was.
 
+## Training (Buy/Wait model)
+
+**Question the model answers:** for one GPU type (chipset + new/used), is the typical price in ~14 days at least 5 % lower than today? Yes = **Wait**, no = **Buy Now**.
+
+1. `staging.gpu_daily_prices` (grain: one row per `chipset`, `condition_group`, `snapshot_date`) comes from `staging.gpu_deals`. Single eBay listings come and go daily, so the model works on a per-GPU-type price series instead. The build normalises chipset casing (`Rx 580` = `RX 580`), maps conditions to `new` / `used` (drops "for parts"), keeps USD prices between 20 and 20,000, takes the **median** price (robust to outlier listings) and keeps groups with ≥ 3 listings that day.
+2. `src/training/features.py` builds past-only features per series: price returns over 3/7/14/30 days, position in the 30-day range, volatility, listing counts, VRAM, price per GB, market-wide 7/14-day movement, days since the last AI model release and the number of releases in the last 30/90 days. **Label:** median price on days t+12..t+16 vs median price on days t-2..t; a drop of ≥ 5 % = Wait. Both ends are smoothed, so one noisy day can't flip the label.
+3. `src/training/train.py` splits by **date**: train | 16-day gap | validation | 16-day gap | test (20 % each for validation and test). The gaps are as long as the label horizon, so no future price leaks into an earlier split.
+
+**Model comparison** (every candidate outputs a "Wait score"; the threshold is tuned for F1 on validation):
+
+| Candidate | Type | Why it's in the comparison |
+|---|---|---|
+| `baseline_momentum` | rule | "prices that fell last week keep falling"; the model must beat this |
+| `logistic_regression` | classification | simple, explainable reference |
+| `random_forest` | classification | non-linear, robust to noise |
+| `lightgbm_classifier` | classification | the originally planned model |
+| `lightgbm_regressor` | **regression** on the 14-day return | tests whether predicting the price change beats predicting the class |
+
+The best validation **PR-AUC** wins (PR-AUC because only ~20 % of days are Wait). It is refit on train + validation and scored once on the test period. **Quality gate:** test PR-AUC must beat both the Wait base rate and the momentum baseline. Then the model is refit on all labelled data and registered in MLflow as `gpu-buy-wait`; only a model that passes the gate gets the alias `champion`. The run exits with code 2 when the gate fails, so the Kestra task shows red.
+
+```bash
+uv run python -m src.transformation.gpu_daily_prices build
+uv run python -m src.training.train              # logs to MLflow (localhost:5001)
+uv run python -m src.training.train --no-mlflow  # dry run, prints the comparison only
+```
+
+Results on the full history (2025-09-19 to 2026-11-20, 132 series, 32k labelled rows):
+
+| Model | Val PR-AUC | Val ROC-AUC |
+|---|---|---|
+| logistic_regression | 0.401 | 0.704 |
+| random_forest | 0.395 | 0.728 |
+| lightgbm_classifier | 0.385 | 0.706 |
+| lightgbm_regressor | 0.378 | 0.671 |
+| baseline_momentum | 0.182 | 0.417 |
+
+Test (2026-08-07 to 2026-10-08) for the selected logistic regression: PR-AUC 0.370 vs a base rate of 0.184, ROC-AUC 0.731. The momentum baseline scores *below* random (ROC-AUC 0.39), so short-term eBay price drops tend to bounce back. The four learned models are within 0.02 PR-AUC of each other; with ~14 months of history the simple model is as good as LightGBM.
+
+In MLflow (http://localhost:5001), experiment `gpu-buy-wait` holds one parent run `train-compare` per training, one child run per candidate, and `report/` artifacts (`model_comparison.csv`, `summary.json`, `feature_importance.csv`). The registered model version carries the decision threshold and score type as tags.
+
 ## Kestra
 
 Kestra runs the pipelines on a schedule. Open the UI at [http://localhost:8081](http://localhost:8081) (`KESTRA_PORT`) and log in with `KESTRA_USER` and `KESTRA_PASSWORD` from `.env`. Kestra reads the flows from `containers/kestra/flows/` into the namespace `gpu` and picks up file edits while it runs.
@@ -123,6 +163,7 @@ docker compose --profile ingest build ingestion
 | `epoch_models_daily` | daily, 05:00 | fetches the Epoch CSV and rebuilds `staging.model_releases` |
 | `gpu_deals_daily` | daily, 06:00 | loads the day's snapshot, checks it has at least 1,000 rows, and transforms that day into `staging.gpu_deals` |
 | `gpu_deals_relink_weekly` | Sunday, 08:00 | rebuilds all of `staging.gpu_deals`, so older deals link to releases Epoch added after their load |
+| `training_weekly` | Monday, 08:00 | rebuilds `staging.gpu_daily_prices`, trains and compares the models, registers the best in MLflow (`champion` only if it passes the quality gate) |
 
 `epoch_models_daily` must finish before `gpu_deals_daily` starts, because the deal transform links each listing to a release in the calendar. The schedules leave one hour between the two. On a fresh setup, execute `epoch_models_daily` by hand first, then `gpu_deals_daily` with `backfill` on. Full rebuilds of `staging.gpu_deals` have a one-hour timeout. Each flow queues a second execution until the first one ends. If Kestra was down at a scheduled time, it runs the last missed execution when it starts again.
 
@@ -168,6 +209,9 @@ uv run python -c "from src.ingestion.storage import get_client; print(sorted(b['
 - Epoch AI publishes only the current CSV, with no history. `epoch_models fetch --date` with an old date downloads today's CSV and stores it under that date, so use it for the latest snapshot only. The GPU archive is dated, and you can backfill it.
 - For today, `gpu_deals daily` falls back to `current-gpu-deals.json` until the dated archive file exists. A later `daily --date` or `backfill --force` for that date replaces the snapshot with the archive version.
 - `staging.gpu_deals` collapses exact duplicate listings within a snapshot (on 2026-10-25, 3,805 raw rows became 2,349 staging rows). Bundle listings ("set of two cards") skew `price_per_gb`, because `vram_gb` counts one card.
+- The Buy/Wait label needs ~16 future days, so the newest 16 days are never in training; the model also only has ~14 months of history, so seasonal effects (e.g. Black Friday) appear at most once.
+- eBay medians are noisy for rare GPUs; series with fewer than 45 observed days are left out of training.
+- MLflow gives clients direct MinIO links when they download models. From the host, `objectstorage:9000` doesn't resolve, so set `MLFLOW_ENABLE_PROXY_MULTIPART_DOWNLOAD=false` (in `.env-example`) to download through the MLflow server instead.
 - The Compose setup targets local development. Cloud infrastructure, Terraform and secret management are W14 work.
 
 ## Servers

@@ -170,6 +170,7 @@ def _log_mlflow(summary: dict, table: pd.DataFrame,
                 final: Candidate, labelled: pd.DataFrame) -> None:
     import mlflow
     import mlflow.sklearn
+    import skops.io as sio
     from mlflow import MlflowClient
 
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5001"))
@@ -199,10 +200,15 @@ def _log_mlflow(summary: dict, table: pd.DataFrame,
                 imp.to_csv(Path(tmp) / "feature_importance.csv", index=False)
             mlflow.log_artifacts(tmp, artifact_path="report")
 
+        # MLflow saves sklearn models with skops (no arbitrary pickle code on load).
+        # skops only loads types on an allow-list; the types our own freshly
+        # trained estimator uses (e.g. numpy.dtype, LightGBM classes) are trusted.
+        trusted = sio.get_untrusted_types(data=sio.dumps(final.estimator))
         info = mlflow.sklearn.log_model(
             final.estimator, name="model",
             input_example=labelled[NUMERIC_FEATURES].head(5),
             registered_model_name=REGISTERED_MODEL,
+            skops_trusted_types=trusted,
         )
         client = MlflowClient()
         version = info.registered_model_version

@@ -18,14 +18,15 @@ pluginDefaults:
         networkMode: "{{ envs.network }}"
         entryPoint: []
       env:
-        PYTHONPATH: /app
         POSTGRES_HOST: postgres
         POSTGRES_PORT: "5432"
         POSTGRES_DB: "{{ envs.db }}"
         POSTGRES_USER: "{{ envs.user }}"
         POSTGRES_PASSWORD: "{{ envs.password }}"
         MLFLOW_TRACKING_URI: http://mlflow:5001
+        GIT_PYTHON_REFRESH: quiet  # no git in the image; MLflow only uses it for run tags
 
+# Kestra starts the container in its own task folder, so --directory points uv at the project in /app.
 tasks:
   - id: build_daily_prices
     type: io.kestra.plugin.scripts.shell.Commands
@@ -34,17 +35,19 @@ tasks:
       interval: PT5M
       maxAttempt: 2
     commands:
-      - cd /app && /app/.venv/bin/python -m src.transformation.gpu_daily_prices build
+      - uv run --directory /app --no-sync python -m src.transformation.gpu_daily_prices build
 
   # exit code 2 = quality gate failed: the model is registered but not promoted,
   # and the task fails so the run shows up red in the Kestra UI.
   - id: train_and_register
     type: io.kestra.plugin.scripts.shell.Commands
+    timeout: PT1H
     commands:
-      - cd /app && /app/.venv/bin/python -m src.training.train
+      - uv run --directory /app --no-sync python -m src.training.train
 
 triggers:
   - id: weekly_monday_0800
     type: io.kestra.plugin.core.trigger.Schedule
     cron: "0 8 * * 1"
     timezone: UTC
+    recoverMissedSchedules: LAST
