@@ -179,7 +179,7 @@ ORDER BY rank_in_day;
 
 ## Kestra
 
-Kestra runs the pipelines on a schedule. Open the UI at [http://localhost:8081](http://localhost:8081) (`KESTRA_PORT`) and log in with `KESTRA_USER` and `KESTRA_PASSWORD` from `.env`. Kestra reads the flows from `containers/kestra/flows/` into the namespace `gpu` and picks up file edits while it runs.
+Kestra runs the pipelines on a schedule. Open the UI at [http://localhost:8081](http://localhost:8081) (`KESTRA_PORT`) and log in with `KESTRA_USER` and `KESTRA_PASSWORD` from `.env`. Kestra reads the flows from `containers/kestra/flows/` into the namespace `gpu` and picks up file edits while it runs. Flow files must be named `main_<namespace>_<flow id>.yaml` (e.g. `main_gpu_gpu_deals_daily.yaml`): Kestra's file sync takes the part before the first `_` as the tenant, and the UI/API only show tenant `main`.
 
 Each task starts a container from the `gpu-ingestion:local` image. Kestra won't pull it, so build it once before the first run:
 
