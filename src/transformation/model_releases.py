@@ -13,6 +13,7 @@ Rerunnable: UPSERT from the latest raw version. Raw stays intact.
 
 from __future__ import annotations
 
+import argparse
 import sys
 
 from ..ingestion.db import STAGING_SCHEMA_LOCK, get_conn
@@ -59,6 +60,12 @@ def build() -> int:
             cur.execute(DDL)
             cur.execute(BUILD_SQL)
             count = cur.rowcount
+            if count == 0:
+                # raise before commit: nothing changes, caller sees the failure
+                raise ValueError(
+                    "model_releases: 0 rows from the latest raw.epoch_models load "
+                    "(table empty, or every row filtered out)"
+                )
         conn.commit()
     finally:
         conn.close()
@@ -66,9 +73,10 @@ def build() -> int:
 
 
 def main() -> None:
-    if len(sys.argv) != 2 or sys.argv[1] != "build":
-        print("usage: python -m src.transformation.model_releases build")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(prog="python -m src.transformation.model_releases")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("build", help="rebuild staging.model_releases from raw")
+    parser.parse_args()
     count = build()
     print(f"model_releases: built {count} rows -> {TARGET}")
 

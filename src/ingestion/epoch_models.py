@@ -35,39 +35,46 @@ from .storage import ensure_bucket, get_client, upload_bytes
 
 SOURCE = "epoch_models"
 CSV_NAME = "notable_ai_models.csv"
+MIN_ROWS = 500
+EXPECTED_COLUMNS = {"Model", "Organization", "Publication date"}
 
 
 def minio_key(day: date) -> str:
     return f"epoch-ai/load_date={day.isoformat()}/{CSV_NAME}"
 
 
-def run_checks(records: list[dict], fieldnames: list[str]) -> str:
-    notes = []
-    if len(records) < 500:
-        notes.append(f"suspiciously few rows: {len(records)}")
-    expected = {"Model", "Organization", "Publication date"}
-    missing = expected - set(fieldnames or [])
+def validate(records: list[dict], fieldnames: list[str]) -> None:
+    """Hard checks. Raises before anything is written to MinIO or Postgres."""
+    problems = []
+    if len(records) < MIN_ROWS:
+        problems.append(f"too few rows: {len(records)} (< {MIN_ROWS})")
+    missing = EXPECTED_COLUMNS - set(fieldnames or [])
     if missing:
-        notes.append(f"expected columns missing: {sorted(missing)}")
-    return "; ".join(notes) if notes else "checks ok"
+        problems.append(f"expected columns missing: {sorted(missing)}")
+    if problems:
+        raise ValueError("epoch csv rejected: " + "; ".join(problems))
 
 
 def load_csv(raw_bytes: bytes, filename: str, day: date, mode: str) -> int:
-    """Land one CSV version in MinIO + Postgres. Returns row count."""
-    s3 = get_client()
-    ensure_bucket(s3)
-    upload_bytes(s3, minio_key(day), raw_bytes)
+    """Validate, then land one CSV version in MinIO + Postgres. Returns row count.
 
-    text = raw_bytes.decode("utf-8-sig")  # tolerate BOM
-    reader = csv.DictReader(text.splitlines())
-    records = list(reader)
-    if not records:
-        raise ValueError("CSV contains zero data rows")
-
+    Everything runs inside IngestionRun, so a rejected file is logged as
+    'failed' in raw.ingestion_log. The caller saves the sha256 only after this
+    returns, so a rejected file is retried on the next run.
+    """
     conn = get_conn()
     try:
         ensure_schema(conn)
         with IngestionRun(conn, SOURCE, mode, snapshot_date=day) as run:
+            text = raw_bytes.decode("utf-8-sig")  # tolerate BOM
+            reader = csv.DictReader(text.splitlines())
+            records = list(reader)
+            validate(records, reader.fieldnames or [])
+
+            s3 = get_client()
+            ensure_bucket(s3)
+            upload_bytes(s3, minio_key(day), raw_bytes)
+
             with conn.cursor() as cur:
                 cur.execute(
                     "DELETE FROM raw.epoch_models WHERE load_date = %s", (day,)
@@ -80,7 +87,7 @@ def load_csv(raw_bytes: bytes, filename: str, day: date, mode: str) -> int:
                 )
             conn.commit()
             run.rows_loaded = len(records)
-            run.message = run_checks(records, reader.fieldnames or [])
+            run.message = "checks ok"
     finally:
         conn.close()
     return len(records)
@@ -129,17 +136,18 @@ def main() -> None:
     sub = p.add_subparsers(dest="mode", required=True)
 
     sp = sub.add_parser("fetch", help="download the upstream CSV (hash-checked)")
-    sp.add_argument("--date", type=date.fromisoformat, default=date.today())
+    sp.add_argument("--date", type=date.fromisoformat, default=None)
 
     sp = sub.add_parser("snapshot", help="load a local CSV file")
     sp.add_argument("--file", type=str, default=str(EPOCH_CSV))
-    sp.add_argument("--date", type=date.fromisoformat, default=date.today())
+    sp.add_argument("--date", type=date.fromisoformat, default=None)
 
     args = p.parse_args()
+    today = date.today()
     if args.mode == "fetch":
-        mode_fetch(args.date)
+        mode_fetch(args.date or today)
     elif args.mode == "snapshot":
-        mode_snapshot(Path(args.file), args.date)
+        mode_snapshot(Path(args.file), args.date or today)
 
 
 if __name__ == "__main__":
