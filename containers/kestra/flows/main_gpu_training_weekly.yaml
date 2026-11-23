@@ -1,0 +1,53 @@
+id: training_weekly
+namespace: gpu
+description: |
+  Rebuild staging.gpu_daily_prices, then train + compare the Buy/Wait models
+  and register the best one in MLflow (alias `champion` only if it passes the
+  quality gate). Runs after the daily ingestion of Monday.
+
+labels:
+  stage: training
+
+pluginDefaults:
+  - type: io.kestra.plugin.scripts.shell.Commands
+    values:
+      containerImage: gpu-ingestion:local  # same image, ML deps come from uv.lock
+      taskRunner:
+        type: io.kestra.plugin.scripts.runner.docker.Docker
+        pullPolicy: NEVER
+        networkMode: "{{ envs.network }}"
+        entryPoint: []
+      env:
+        POSTGRES_HOST: postgres
+        POSTGRES_PORT: "5432"
+        POSTGRES_DB: "{{ envs.db }}"
+        POSTGRES_USER: "{{ envs.user }}"
+        POSTGRES_PASSWORD: "{{ envs.password }}"
+        MLFLOW_TRACKING_URI: http://mlflow:5001
+        GIT_PYTHON_REFRESH: quiet  # no git in the image; MLflow only uses it for run tags
+
+# Kestra starts the container in its own task folder, so --directory points uv at the project in /app.
+tasks:
+  - id: build_daily_prices
+    type: io.kestra.plugin.scripts.shell.Commands
+    retry:
+      type: constant
+      interval: PT5M
+      maxAttempt: 2
+    commands:
+      - uv run --directory /app --no-sync python -m src.transformation.gpu_daily_prices build
+
+  # exit code 2 = quality gate failed: the model is registered but not promoted,
+  # and the task fails so the run shows up red in the Kestra UI.
+  - id: train_and_register
+    type: io.kestra.plugin.scripts.shell.Commands
+    timeout: PT1H
+    commands:
+      - uv run --directory /app --no-sync python -m src.training.train
+
+triggers:
+  - id: weekly_monday_0800
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 8 * * 1"
+    timezone: UTC
+    recoverMissedSchedules: LAST

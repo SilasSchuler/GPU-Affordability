@@ -3,6 +3,11 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 WORKDIR /app
 
+# libgomp: OpenMP runtime required by LightGBM (training pipeline).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Dependencies from the lockfile (reproducible, same as host `uv sync`).
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev
